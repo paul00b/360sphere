@@ -1,0 +1,68 @@
+{
+  "spheres": [
+    {
+      "id": "demo-salon",
+      "name": "Salon",
+      "file": "salon.jpg",
+      "thumb": "salon_thumb.jpg",
+      "width": 2048,
+      "height": 1024,
+      "defaultYaw": 0.0,
+      "defaultPitch": 0.0,
+      "portals": [
+        {
+          "id": "demo-salon-cuisine",
+          "to": "demo-cuisine",
+          "yaw": 1.5708,
+          "pitch": -0.0798,
+          "label": "Cuisine"
+        },
+        {
+          "id": "demo-salon-chambre",
+          "to": "demo-chambre",
+          "yaw": -1.5708,
+          "pitch": -0.0798,
+          "label": "Chambre"
+        }
+      ]
+    },
+    {
+      "id": "demo-cuisine",
+      "name": "Cuisine",
+      "file": "cuisine.jpg",
+      "thumb": "cuisine_thumb.jpg",
+      "width": 2048,
+      "height": 1024,
+      "defaultYaw": 0.0,
+      "defaultPitch": 0.0,
+      "portals": [
+        {
+          "id": "demo-cuisine-salon",
+          "to": "demo-salon",
+          "yaw": -1.5708,
+          "pitch": -0.1107,
+          "label": "Salon"
+        }
+      ]
+    },
+    {
+      "id": "demo-chambre",
+      "name": "Chambre",
+      "file": "chambre.jpg",
+      "thumb": "chambre_thumb.jpg",
+      "width": 2048,
+      "height": 1024,
+      "defaultYaw": 0.0,
+      "defaultPitch": 0.0,
+      "portals": [
+        {
+          "id": "demo-chambre-salon",
+          "to": "demo-salon",
+          "yaw": 1.5708,
+          "pitch": -0.0997,
+          "label": "Salon"
+        }
+      ]
+    }
+  ]
+}

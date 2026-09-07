@@ -35,6 +35,24 @@ capture, mémoire…) et un bouton « Réessayer » (réglages plus tolérants a
 **Visualiser** : appui sur une vignette. Glisser pour regarder autour, pincer pour zoomer. Appui long
 sur une vignette : renommer / supprimer.
 
+**Relier les pièces (V2)** : dans le viewer, le bouton crayon passe en mode édition (cadre jaune).
+Toucher un endroit de la sphère ouvre le dialogue « Nouveau portail » : pièce de destination, libellé
+(prérempli avec le nom de la pièce), et par défaut la création du portail retour dans la pièce cible
+(placé à l'opposé, à déplacer si besoin). Toucher un libellé existant permet de le modifier, le déplacer
+(puis toucher le nouvel emplacement) ou le supprimer. Le bouton cible enregistre la vue courante comme
+**vue d'entrée** de la sphère (utilisée quand on l'ouvre depuis la galerie). Le bouton retour quitte
+d'abord le mode édition.
+
+**Visiter** : hors édition, chaque portail apparaît comme une flèche 3D au sol (VirtualTourPlugin)
+pointant vers la destination, plus un libellé lisible posé à l'endroit exact du portail. Toucher l'un ou
+l'autre lance la transition ; la vue d'arrivée regarde dans la direction du portail emprunté. Le bouton
+retour revient à la pièce précédente (historique), puis ferme le viewer.
+
+**Visite de démo** : menu ⋮ → « Charger la visite de démo » (ou le bouton de l'écran vide). Trois
+pièces synthétiques (Salon ↔ Cuisine, Salon ↔ Chambre) rendues par lancer de rayons, avec les portes
+exactement dans la direction des portails, pour tester la navigation de bout en bout. Elles sont
+éditables et supprimables comme les autres sphères.
+
 ## Architecture
 
 ```
@@ -45,9 +63,11 @@ app/src/main/java/care/primary/sphere360/
              EquirectGeometry (placement exact sur le canevas 2:1), EquirectFill (pôles, trous),
              OpenCvRuntime (chargement des natives), StitchJobs (état observé par la galerie)
   gallery/   GalleryActivity
-  viewer/    ViewerActivity (WebView), LocalContentServer (origine https locale pour les assets/images)
+  viewer/    ViewerActivity (WebView, mode édition, dialogues de portail), LocalContentServer (origine https locale)
+  demo/      DemoTourInstaller (copie assets/demo → galerie)
   data/      Sphere, Portal, CaptureSessionMeta (JSON), TourStore (persistance filesDir)
 app/src/main/assets/viewer/   index.html, viewer.js (glue), vendor/psv-bundle.* (three + Photo Sphere Viewer)
+app/src/main/assets/demo/     3 panoramas synthétiques + demo.json (générés par tools/make-demo-panos.py)
 web/                          sources du bundle du viewer (npm + esbuild) et test Playwright
 tools/                        scripts de build sans SDK manager, keystore debug
 ```
@@ -59,6 +79,16 @@ tools/                        scripts de build sans SDK manager, keystore debug
 | Stitching | **OpenCV 4.14 `cv::Stitcher`** mode PANORAMA (warper sphérique, `BundleAdjusterRay`, correction d'ondulation, `MultiBandBlender`) via les bindings Java **JavaCPP Presets** (`org.bytedeco:opencv`) | L'AAR officiel `org.opencv:opencv` n'expose pas le module `stitching` en Java (il faudrait du C++/NDK). JavaCPP expose tout, y compris `cameras()` et `resultMask()`, indispensables pour placer le résultat exactement sur la sphère. |
 | Viewer 360 | **Photo Sphere Viewer 5.15** (core + `VirtualTourPlugin` + `MarkersPlugin`) sur three.js, empaqueté avec esbuild dans une WebView | Drag, pinch-to-zoom, transitions, flèches 3D et liens entre scènes prêts à l'emploi. |
 | UI | Widgets du framework Android (thème Material natif) | Google Maven (AndroidX) n'était pas accessible depuis l'environnement de build, voir plus bas. |
+
+### Portails (V2)
+
+Chaque `Portal` (id, sphère cible, yaw, pitch, libellé) devient côté web un lien du
+`VirtualTourPlugin` (flèche 3D, transition, rotation vers le lien puis conservation de la direction à
+l'arrivée : c'est le comportement natif du plugin) **et** un marqueur HTML du `MarkersPlugin` à la
+position exacte du portail pour que le libellé soit lisible avant de cliquer (les flèches 3D sont
+toujours dessinées au sol, sous l'horizon). Les modifications passent par `updateNode` sans recharger
+le panorama. Les angles sont en radians, convention Photo Sphere Viewer : yaw 0 au centre de l'image
+équirectangulaire, croissant vers la droite ; pitch positif vers le haut.
 
 ### Du panorama OpenCV à l'équirectangulaire
 
@@ -115,9 +145,10 @@ cd web && npm ci && node test/viewer.test.mjs /chemin/panoramas /chemin/captures
 
 - **Tests JVM** (20) : grille de capture, projection/orientation, géométrie équirectangulaire,
   remplissage des pôles et trous, sérialisation JSON.
-- **Viewer** : test d'intégration Playwright dans Chromium headless (WebGL logiciel) : chargement,
-  libellés, flèches 3D, navigation par portail avec vue d'arrivée dans la direction du portail,
-  retour arrière, mode édition, mise à jour de nœud.
+- **Viewer** : tests d'intégration Playwright dans Chromium headless (WebGL logiciel) :
+  `web/test/viewer.test.mjs` (chargement, libellés, flèches 3D, navigation par portail avec vue
+  d'arrivée dans la direction du portail, retour arrière, mode édition, mise à jour de nœud) et
+  `web/test/demo.test.mjs` (parcours complet Salon ↔ Cuisine, Salon ↔ Chambre de la visite de démo).
 - **APK** : vérifiée structurellement (`aapt2 dump badging`, `apksigner verify`, classes dans le dex,
   natives, assets).
 - **Non testé ici** : exécution sur un téléphone réel (pas d'émulateur ni d'appareil dans
@@ -149,6 +180,12 @@ cd web && npm ci && node test/viewer.test.mjs /chemin/panoramas /chemin/captures
   d'électronique.
 - **Architecture** : APK arm64 uniquement (JavaCPP ne publie plus de natives Android 32 bits).
 - **Résolution** : équirectangulaire 4096 × 2048 (compromis qualité / mémoire GPU des WebView mobiles).
+- **Portails** : la flèche 3D est toujours affichée au sol dans la direction du portail (comportement du
+  VirtualTourPlugin), c'est le libellé qui marque l'endroit exact touché. Le portail retour créé
+  automatiquement est placé à l'opposé de la direction d'arrivée : à ajuster avec « Déplacer » si la
+  porte n'est pas en face. Pas de correction d'orientation entre sphères (pas de boussole) : deux
+  sphères capturées ont chacune leur yaw 0 = direction de la première photo.
+- **Démo** : panoramas synthétiques (pas de photos réelles disponibles dans l'environnement de build).
 
 ## Licences des briques
 

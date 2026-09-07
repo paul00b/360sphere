@@ -28,6 +28,8 @@ import care.primary.sphere360.data.CaptureSessionMeta
 import care.primary.sphere360.data.SessionState
 import care.primary.sphere360.data.Sphere
 import care.primary.sphere360.data.TourStore
+import care.primary.sphere360.demo.DemoTourInstaller
+import care.primary.sphere360.util.Bg
 import care.primary.sphere360.stitch.StitchJobs
 import care.primary.sphere360.stitch.StitchService
 import care.primary.sphere360.util.Thumbs
@@ -67,6 +69,7 @@ open class GalleryActivity : Activity() {
         emptyView = findViewById(R.id.empty_view)
         fab = findViewById(R.id.fab)
         fab.setOnClickListener { startCapture() }
+        findViewById<Button>(R.id.btn_demo).setOnClickListener { installDemo() }
         grid.setOnItemClickListener { _, _, position, _ -> onItemClick(items[position]) }
         grid.setOnItemLongClickListener { _, view, position, _ -> onItemLongClick(view, items[position]); true }
         cleanupStaleSessions()
@@ -87,6 +90,7 @@ open class GalleryActivity : Activity() {
 
     protected open fun onMenu(id: Int): Boolean {
         when (id) {
+            R.id.menu_demo -> { installDemo(); return true }
             R.id.menu_about -> {
                 AlertDialog.Builder(this).setTitle(R.string.about_title).setMessage(R.string.about_body)
                     .setPositiveButton(R.string.action_ok, null).show()
@@ -117,6 +121,17 @@ open class GalleryActivity : Activity() {
     protected open fun onItemsRefreshed(empty: Boolean) {}
 
     // ---- Actions ----
+
+    private fun installDemo() {
+        Bg.io {
+            try {
+                DemoTourInstaller.install(this, store)
+                Bg.onMain { toast(getString(R.string.demo_installed)) }
+            } catch (e: Exception) {
+                Bg.onMain { toast(e.message ?: "erreur") }
+            }
+        }
+    }
 
     private fun startCapture() {
         val perms = mutableListOf(Manifest.permission.CAMERA)

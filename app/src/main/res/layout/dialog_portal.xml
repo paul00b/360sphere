@@ -54,4 +54,15 @@
         android:checked="true"
         android:text="@string/portal_create_return"
         android:textAppearance="@style/Text.Body" />
+
+    <Button
+        android:id="@+id/btn_delete_portal"
+        style="@style/Button.Secondary"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:background="@drawable/bg_button_danger"
+        android:text="@string/portal_delete"
+        android:textColor="@color/error"
+        android:visibility="gone" />
 </LinearLayout>
