@@ -1,0 +1,20 @@
+# Gradle / Android Studio
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.DS_Store
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Natives OpenCV/JavaCPP élaguées : produites par tools/prepare-natives.sh (25 Mo, non versionnées)
+app/src/main/jniLibs/
+
+# Toolchain hors-SDK (voir tools/setup-toolchain.sh)
+.toolchain/
+
+# Web viewer sources deps
+web/node_modules/

@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Sphère 360</string>
+
+    <!-- Galerie -->
+    <string name="gallery_title">Mes sphères</string>
+    <string name="gallery_empty_title">Aucune sphère pour l\'instant</string>
+    <string name="gallery_empty_body">Appuie sur le bouton ci-dessous pour capturer ta première pièce à 360°.</string>
+    <string name="action_capture">Capturer une sphère</string>
+    <string name="action_rename">Renommer</string>
+    <string name="action_delete">Supprimer</string>
+    <string name="action_retry">Réessayer</string>
+    <string name="action_cancel">Annuler</string>
+    <string name="action_ok">OK</string>
+    <string name="action_save">Enregistrer</string>
+    <string name="action_start">Commencer</string>
+    <string name="action_finish">Terminer</string>
+    <string name="action_continue">Continuer</string>
+    <string name="action_close">Fermer</string>
+    <string name="action_back">Retour</string>
+    <string name="action_more">Plus d\'options</string>
+    <string name="delete_sphere_title">Supprimer « %1$s » ?</string>
+    <string name="delete_sphere_body">La sphère et les portails qui y mènent seront supprimés définitivement.</string>
+    <string name="delete_session_title">Supprimer cette capture ?</string>
+    <string name="delete_session_body">Les photos prises seront supprimées.</string>
+    <string name="rename_title">Renommer la sphère</string>
+    <string name="rename_hint">Nom de la pièce (ex. Salon)</string>
+    <string name="sphere_default_name">Pièce %1$d</string>
+    <string name="status_stitching">Assemblage en cours…</string>
+    <string name="status_stitching_pct">%1$s · %2$d %%</string>
+    <string name="status_queued">En attente d\'assemblage</string>
+    <string name="status_failed">Assemblage impossible</string>
+    <string name="status_interrupted">Assemblage interrompu</string>
+    <string name="status_shots">%1$d photos</string>
+    <string name="meta_size">%1$d × %2$d</string>
+    <string name="meta_portals">%1$d portail(s)</string>
+    <string name="menu_about">À propos</string>
+    <string name="about_title">Sphère 360</string>
+    <string name="about_body">Capture guidée de photos sphériques et visite virtuelle.\n\nAssemblage : OpenCV Stitcher (via JavaCPP).\nVisualisation : Photo Sphere Viewer.\n\nLimites connues : voir le README du projet.</string>
+    <string name="notification_permission_hint">Autorise les notifications pour suivre l\'assemblage quand l\'app est en arrière-plan.</string>
+
+    <!-- Capture -->
+    <string name="capture_intro_title">Capture guidée</string>
+    <string name="capture_intro_body">Reste sur place et pivote sur toi-même, sans te déplacer. Garde le téléphone proche du corps et amène le cercle sur chaque point : la photo se prend toute seule quand tu es aligné et immobile.</string>
+    <string name="capture_intro_tip">Astuce : commence face à la zone la plus représentative en luminosité, l\'exposition est verrouillée au départ pour éviter les raccords visibles.</string>
+    <string name="capture_progress">%1$d / %2$d</string>
+    <string name="capture_hint_aim">Amène le cercle sur le point</string>
+    <string name="capture_hint_hold">Ne bouge plus…</string>
+    <string name="capture_hint_turn">Tourne vers la flèche</string>
+    <string name="capture_hint_done">Capture terminée, assemblage lancé</string>
+    <string name="capture_hint_saving">Photo enregistrée</string>
+    <string name="capture_cancel_title">Abandonner la capture ?</string>
+    <string name="capture_cancel_body">Les %1$d photos déjà prises seront perdues.</string>
+    <string name="capture_cancel_confirm">Abandonner</string>
+    <string name="capture_finish_early_title">Terminer maintenant ?</string>
+    <string name="capture_finish_early_body">Il manque %1$d positions : la sphère aura des zones vides. Tu peux aussi continuer pour la compléter.</string>
+    <string name="capture_finish_now">Terminer quand même</string>
+    <string name="capture_need_more">Prends au moins %1$d photos avant de terminer</string>
+    <string name="capture_camera_error">Impossible d\'utiliser la caméra : %1$s</string>
+    <string name="capture_permission_denied">L\'accès à la caméra est nécessaire pour capturer une sphère.</string>
+    <string name="capture_no_sensor">Ce téléphone n\'a pas de capteur d\'orientation compatible.</string>
+    <string name="capture_started_stitch">Assemblage lancé en arrière-plan</string>
+
+    <!-- Assemblage -->
+    <string name="stitch_notif_channel">Assemblage des sphères</string>
+    <string name="stitch_notif_title">Assemblage de « %1$s »</string>
+    <string name="stitch_notif_done_title">Sphère prête</string>
+    <string name="stitch_notif_done_body">« %1$s » est prête à être visitée.</string>
+    <string name="stitch_notif_failed_title">Assemblage impossible</string>
+    <string name="stitch_stage_loading">Lecture des photos</string>
+    <string name="stitch_stage_align">Alignement des photos</string>
+    <string name="stitch_stage_compose">Fusion des images</string>
+    <string name="stitch_stage_finalize">Finalisation</string>
+    <string name="stitch_error_need_more">Pas assez de photos exploitables pour assembler la sphère.</string>
+    <string name="stitch_error_homography">Les photos ne se recoupent pas assez (murs unis, faible lumière ou rotation trop rapide).</string>
+    <string name="stitch_error_adjust">L\'alignement a échoué : le téléphone s\'est probablement déplacé pendant la capture.</string>
+    <string name="stitch_error_partial">Seulement %1$d photos sur %2$d ont pu être raccordées.</string>
+    <string name="stitch_error_generic">Erreur pendant l\'assemblage : %1$s</string>
+    <string name="stitch_error_memory">Mémoire insuffisante pour assembler la sphère.</string>
+    <string name="stitch_warning_dropped">%1$d photo(s) non raccordée(s)</string>
+    <string name="retry_relaxed_hint">Réessayer avec des réglages plus tolérants</string>
+    <string name="recapture">Recapturer</string>
+
+    <!-- Viewer -->
+    <string name="viewer_loading">Chargement de la sphère…</string>
+    <string name="viewer_error">Impossible d\'afficher la sphère.</string>
+    <string name="viewer_hint_drag">Glisse pour regarder autour, pince pour zoomer</string>
+
+    <!-- V2 : portails / édition -->
+    <string name="edit_mode">Mode édition</string>
+    <string name="edit_mode_on">Édition</string>
+    <string name="edit_mode_hint">Touche un endroit de la sphère pour y placer un portail</string>
+    <string name="edit_move_hint">Touche le nouvel emplacement du portail « %1$s »</string>
+    <string name="edit_exit">Quitter l\'édition</string>
+    <string name="portal_new_title">Nouveau portail</string>
+    <string name="portal_edit_title">Modifier le portail</string>
+    <string name="portal_target">Vers la pièce</string>
+    <string name="portal_label">Libellé affiché</string>
+    <string name="portal_label_hint">ex. Cuisine</string>
+    <string name="portal_no_target">Il faut au moins une autre sphère dans la galerie pour créer un portail.</string>
+    <string name="portal_delete">Supprimer le portail</string>
+    <string name="portal_move">Déplacer</string>
+    <string name="portal_added">Portail ajouté</string>
+    <string name="portal_create_return">Créer aussi le portail retour</string>
+    <string name="set_entry_view">Définir la vue d\'entrée</string>
+    <string name="entry_view_saved">Vue d\'entrée enregistrée</string>
+
+    <!-- Démo -->
+    <string name="demo_install">Charger la visite de démo (3 pièces)</string>
+    <string name="demo_installed">Visite de démo ajoutée à la galerie</string>
+    <string name="demo_card_title">Essayer avec une visite de démo</string>
+    <string name="demo_card_body">Trois pièces synthétiques déjà reliées par des portails, pour tester la navigation.</string>
+</resources>

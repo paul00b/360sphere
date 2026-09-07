@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <dimen name="screen_padding">16dp</dimen>
+    <dimen name="card_radius">18dp</dimen>
+    <dimen name="card_elevation">2dp</dimen>
+    <dimen name="fab_size">64dp</dimen>
+    <dimen name="toolbar_height">56dp</dimen>
+    <dimen name="text_title">22sp</dimen>
+    <dimen name="text_body">15sp</dimen>
+    <dimen name="text_caption">13sp</dimen>
+</resources>

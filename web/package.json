@@ -1,0 +1,15 @@
+{
+  "name": "sphere360-viewer",
+  "private": true,
+  "description": "Bundle Photo Sphere Viewer + three.js pour la WebView de Sphere360",
+  "dependencies": {
+    "@photo-sphere-viewer/core": "5.15.1",
+    "@photo-sphere-viewer/markers-plugin": "5.15.1",
+    "@photo-sphere-viewer/virtual-tour-plugin": "5.15.1",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "playwright-core": "^1.57.0"
+  }
+}
