@@ -5,11 +5,9 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.pm.PackageManager
 import android.graphics.SurfaceTexture
-import android.media.MediaActionSound
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
-import android.view.HapticFeedbackConstants
 import android.view.TextureView
 import android.view.View
 import android.view.WindowManager
@@ -27,6 +25,7 @@ import care.primary.sphere360.data.TourStore
 import care.primary.sphere360.stitch.StitchMode
 import care.primary.sphere360.stitch.StitchService
 import care.primary.sphere360.util.Bg
+import care.primary.sphere360.util.Haptics
 import care.primary.sphere360.util.dpi
 import care.primary.sphere360.util.onSystemInsets
 import care.primary.sphere360.util.toast
@@ -83,7 +82,7 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
     private var watchdog: Runnable? = null
 
     private var session: CaptureSessionMeta? = null
-    private var shutter: MediaActionSound? = null
+    private lateinit var haptics: Haptics
     private var topInset = 0
     private var bottomInset = 0
     private var lastLayoutKey = ""
@@ -106,6 +105,7 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         intro = findViewById(R.id.intro)
         btnStart = findViewById(R.id.btn_start)
 
+        haptics = Haptics(this)
         tracker = OrientationTracker(this) { onOrientation() }
         if (!tracker.available) {
             toast(getString(R.string.capture_no_sensor))
@@ -203,7 +203,6 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
     override fun onDestroy() {
         super.onDestroy()
         if (::camera.isInitialized) camera.release()
-        shutter?.release()
         val s = session
         // Session jamais démarrée ou sans photo : on nettoie.
         if (s != null && !finishing && s.shots.isEmpty()) store.deleteSession(s.id)
@@ -309,7 +308,6 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         overlay.dirs = dirs
         overlay.active = true
         running = true
-        shutter = MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) }
         Bg.main.postDelayed({ camera.lockExposureAndFocus() }, 700)
     }
 
@@ -406,8 +404,7 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         }
         s.shots.add(shot)
         store.saveSession(s)
-        shutter?.play(MediaActionSound.SHUTTER_CLICK)
-        overlay.performHapticFeedback(HapticFeedbackConstants.CONTEXT_CLICK)
+        haptics.shotTaken()
         updateProgress()
         if (capturedCount >= p.size) completeCapture()
     }
@@ -434,6 +431,7 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         overlay.nextIndex = -1
         overlay.invalidate()
         setHint(R.string.capture_hint_done)
+        haptics.captureComplete()
         s.state = SessionState.CAPTURED
         store.saveSession(s)
         StitchService.enqueue(this, s.id, StitchMode.SENSORS)

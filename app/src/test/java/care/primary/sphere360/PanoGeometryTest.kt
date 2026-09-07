@@ -169,21 +169,35 @@ class PanoGeometryTest {
     }
 
     @Test
-    fun featherWeightIsHighestAtTheCentreAndZeroOnTheBorder() {
+    fun centreWeightDecreasesStrictlyFromTheCentre() {
         val w = 64
         val h = 96
-        val weight = PanoGeometry.featherWeight(w, h)
+        val weight = PanoGeometry.centreWeight(w, h)
         val centre = weight[(h / 2) * w + w / 2]
-        assertEquals(1.0f, centre, 1e-3f)
-        assertTrue(weight[0] < 1e-3f)
-        assertTrue(weight[(h / 2) * w] < centre)
-        // décroissance monotone du centre vers le bord sur une ligne
-        var previous = centre
-        for (x in w / 2 downTo 0) {
+        assertEquals(1.0f, centre, 0.02f)
+        // nul sur les quatre bords
+        assertTrue(weight[0] < 0.02f)
+        assertTrue(weight[w - 1] < 0.02f)
+        assertTrue(weight[(h - 1) * w] < 0.02f)
+        // strictement décroissant du centre vers le bord : sans cela plusieurs photos seraient à
+        // égalité sur les recouvrements et leur moyenne dédoublerait l'image
+        // La largeur est paire : les deux colonnes centrales sont à égale distance du centre, la
+        // décroissance stricte commence donc juste après.
+        var previous = weight[(h / 2) * w + w / 2 - 1]
+        for (x in w / 2 - 2 downTo 0) {
             val v = weight[(h / 2) * w + x]
-            assertTrue("monotone en x=$x", v <= previous + 1e-6f)
+            assertTrue("décroissance stricte en x=$x : $v puis $previous", v < previous)
             previous = v
         }
+        previous = weight[(h / 2 - 1) * w + w / 2]
+        for (y in h / 2 - 2 downTo 0) {
+            val v = weight[y * w + w / 2]
+            assertTrue("décroissance stricte en y=$y", v < previous)
+            previous = v
+        }
+        // la photo la plus centrée sur un point gagne : deux pixels à égale distance du bord le
+        // plus proche ont le même poids, la frontière passe donc à mi-chemin
+        assertEquals(weight[(h / 2) * w + 10], weight[(h / 2) * w + w - 11], 1e-6f)
     }
 
     @Test

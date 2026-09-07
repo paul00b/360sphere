@@ -109,7 +109,23 @@ object PanoGeometry {
      * Empreinte d'une photo sur le canevas équirectangulaire : colonnes couvertes (avec passage
      * ±180°) et intervalle de lignes. `a` est la matrice référence → caméra.
      */
-    class Footprint(val cols: BooleanArray, val rowMin: Int, val rowMax: Int, val colCount: Int)
+    /**
+     * Empreinte d'une photo sur le canevas.
+     *
+     * @param cols colonnes du canevas couvertes, indexées de 0 à la largeur, passage ±180° résolu
+     * @param colStart première colonne en numérotation continue : elle peut être négative ou
+     *   dépasser la largeur du canevas, ce qui permet de traiter l'empreinte comme un rectangle
+     *   même lorsqu'elle chevauche la couture
+     * @param colSpan nombre de colonnes de ce rectangle
+     */
+    class Footprint(
+        val cols: BooleanArray,
+        val rowMin: Int,
+        val rowMax: Int,
+        val colCount: Int,
+        val colStart: Int,
+        val colSpan: Int
+    )
 
     fun footprint(a: DoubleArray, focal: Double, focalY: Double, imgW: Int, imgH: Int, canvasW: Int, canvasH: Int, marginPx: Double = 1.5): Footprint {
         val cx = imgW / 2.0
@@ -149,12 +165,16 @@ object PanoGeometry {
         val poleInside = polesInside(a, focal, focalY, imgW, imgH, marginPx)
         val cols = BooleanArray(canvasW)
         var count = 0
+        var colStart = 0
+        var colSpan = canvasW
         if (poleInside) {
             cols.fill(true); count = canvasW
             if (pitchMax > 0) pitchMax = PI / 2 else pitchMin = -PI / 2
         } else {
             val c0 = kotlin.math.floor(colOfYaw(yawCenter + minRel, canvasW)).toInt() - 1
             val c1 = kotlin.math.ceil(colOfYaw(yawCenter + maxRel, canvasW)).toInt() + 1
+            colStart = c0
+            colSpan = min(canvasW, c1 - c0 + 1)
             var c = c0
             while (c <= c1) {
                 val idx = ((c % canvasW) + canvasW) % canvasW
@@ -164,7 +184,7 @@ object PanoGeometry {
         }
         val rowMin = kotlin.math.floor(rowOfPitch(pitchMax, canvasH)).toInt().coerceIn(0, canvasH - 1)
         val rowMax = kotlin.math.ceil(rowOfPitch(pitchMin, canvasH)).toInt().coerceIn(0, canvasH - 1)
-        return Footprint(cols, min(rowMin, rowMax), max(rowMin, rowMax), count)
+        return Footprint(cols, min(rowMin, rowMax), max(rowMin, rowMax), count, colStart, colSpan)
     }
 
     /** Le zénith ou le nadir tombe-t-il dans le champ de la photo ? */
@@ -180,24 +200,22 @@ object PanoGeometry {
     }
 
     /**
-     * Poids d'un pixel de la photo : 1 au centre, fondu vers 0 sur les bords. Élevé à la puissance
-     * `power`, il concentre le mélange sur les zones de recouvrement et évite de flouter l'image.
+     * Poids de sélection d'un pixel dans sa photo : 1 au centre, 0 sur le bord, décroissant
+     * strictement entre les deux. C'est ce poids qui désigne, pour chaque pixel du canevas, la
+     * photo qui le regarde le plus au centre.
+     *
+     * La décroissance doit être stricte : un plateau à 1 sur la zone centrale rendrait plusieurs
+     * photos à égalité sur de larges recouvrements, et les moyenner produirait le dédoublement
+     * translucide que la composition cherche justement à éviter. La distance retenue est la plus
+     * grande des deux écarts normalisés, ce qui découpe la sphère en cellules rectangulaires dont
+     * les frontières passent à mi-chemin entre les centres des photos voisines.
      */
-    fun featherWeight(imgW: Int, imgH: Int, feather: Double = 0.18, power: Double = 3.0): FloatArray {
+    fun centreWeight(imgW: Int, imgH: Int): FloatArray {
         val w = FloatArray(imgW * imgH)
-        val fx = DoubleArray(imgW)
-        val fy = DoubleArray(imgH)
-        for (x in 0 until imgW) {
-            val d = min(x + 0.5, imgW - 0.5 - x) / imgW
-            fx[x] = smooth((d / feather).coerceIn(0.0, 1.0))
-        }
-        for (y in 0 until imgH) {
-            val d = min(y + 0.5, imgH - 0.5 - y) / imgH
-            fy[y] = smooth((d / feather).coerceIn(0.0, 1.0))
-        }
+        val dx = DoubleArray(imgW) { kotlin.math.abs((it + 0.5) / imgW * 2 - 1) }
+        val dy = DoubleArray(imgH) { kotlin.math.abs((it + 0.5) / imgH * 2 - 1) }
         for (y in 0 until imgH) for (x in 0 until imgW) {
-            val v = fx[x] * fy[y]
-            w[y * imgW + x] = Math.pow(v, power).toFloat().coerceAtLeast(1e-4f)
+            w[y * imgW + x] = (1.0 - max(dx[x], dy[y])).toFloat().coerceIn(0f, 1f)
         }
         return w
     }

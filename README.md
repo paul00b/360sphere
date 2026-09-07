@@ -101,10 +101,8 @@ L'assemblage part des photos réduites à 1280 px de côté et produit un équir
 
 **Chemin par défaut, guidé par les capteurs.** Chaque photo est reprojetée dans le canevas à partir
 de la matrice de rotation enregistrée au déclenchement (`GAME_ROTATION_VECTOR`, donc gyroscope et
-accéléromètre, sans magnétomètre) et de la focale déduite du champ de vue de la caméra. Les
-recouvrements sont fondus par un poids en cloche élevé au cube : chaque pixel vient pour l'essentiel
-de la photo qui le regarde le plus au centre, ce qui adoucit les raccords sans flouter l'image. Ce
-chemin ne dépend ni de la texture des murs ni de la lumière, et il aboutit toujours.
+accéléromètre, sans magnétomètre) et de la focale déduite du champ de vue de la caméra. Ce chemin ne
+dépend ni de la texture des murs ni de la lumière, et il aboutit toujours.
 
 **Chemin d'affinage, sur demande.** Le module stitching d'OpenCV recale les photos sur leurs points
 d'intérêt : détection SIFT, appariement des deux meilleurs voisins, plus grande composante connexe,
@@ -122,6 +120,36 @@ capteur, ce qui évite de laisser le plafond vide.
 
 Le résultat n'est retenu que s'il couvre au moins 97 % de ce que couvrent les capteurs, mesuré en
 angle solide sur une grille grossière. Sinon la sphère est recomposée depuis les capteurs seuls.
+
+### Mélange des recouvrements
+
+Moyenner les photos qui se recouvrent produit un dédoublement translucide très visible, et c'était
+le principal défaut visuel des versions précédentes. La grille prévoit 40 % de recouvrement
+horizontal et les rangées se chevauchent sur une vingtaine de degrés : un pixel reçoit donc souvent
+trois ou quatre photos à poids égal. Le moindre écart entre elles, parallaxe due à un déplacement de
+l'utilisateur ou dérive de quelques degrés du gyroscope, se lit alors comme une double exposition sur
+de larges zones.
+
+La composition sépare maintenant chaque photo en deux échelles, dans l'esprit d'un mélange
+multi-bandes :
+
+- les **fonds**, structures plus larges qu'un quarante-huitième du tour d'horizon (environ 85 pixels
+  sur un canevas de 4096), sont moyennés avec un poids doux sur tout le recouvrement. Les écarts
+  d'exposition et le vignetage se diluent progressivement, sans marche à la jointure, et un
+  dédoublement à cette échelle ne se voit pas ;
+- les **détails** viennent de la photo qui regarde le pixel le plus près de son centre, avec un fondu
+  court vers la deuxième mieux centrée autour de leur frontière. Les contours restent donc nets et
+  uniques, et la parallaxe résiduelle se lit comme un léger décalage local plutôt que comme une image
+  fantôme.
+
+La séparation se fait par convolution normalisée, en ne floutant que les pixels valides pour ne pas
+assombrir les bords. La bande des fonds est calculée une fois par photo à un huitième de la
+résolution, puis cumulée dans un canevas réduit : à son échelle la réduction est invisible et le coût
+divisé par soixante-quatre. Seuls les détails demandent la pleine résolution, traitée par bandes de
+colonnes pour tenir dans la mémoire d'un téléphone.
+
+Sur le banc de test, ce changement fait passer la netteté des contours de 0,69 à 0,79 fois celle du
+panorama de référence, sans allonger le calcul : trois secondes pour trente photos.
 
 ### Pourquoi le recalage n'est pas le chemin par défaut
 
@@ -221,9 +249,13 @@ cd web && npm ci && node test/viewer.test.mjs /chemin/panoramas /chemin/captures
 
 - **Qualité des raccords.** Le chemin par défaut suppose une rotation pure autour de l'objectif. Tout
   déplacement latéral (se pencher, tourner autour de son épaule plutôt qu'autour du téléphone) crée
-  une parallaxe que la projection ne peut pas corriger : les objets proches se dédoublent aux
-  jointures. Les murs lointains restent nets. L'affinage par recalage corrige une partie de ces
-  petits déplacements quand il aboutit.
+  une parallaxe que la projection ne peut pas corriger. Le mélange à deux échelles la transforme en
+  léger décalage local à la frontière entre deux photos, au lieu de l'image fantôme que produisait une
+  moyenne, mais elle reste visible sur les objets proches. Les murs lointains sont nets. L'affinage
+  par recalage corrige une partie de ces petits déplacements quand il aboutit.
+- **Placement des jointures.** La frontière entre deux photos passe à mi-chemin de leurs centres,
+  sans tenir compte du contenu. Une jointure qui tombe sur un objet proche est plus visible que si
+  elle suivait un mur uni ; corriger cela demanderait une recherche de couture par coupe de graphe.
 - **Précision du champ de vue.** La focale vient des métadonnées de la caméra (taille physique du
   capteur et longueur focale). Si le pilote les renseigne mal, toutes les jointures sont décalées de
   la même façon. L'affinage par recalage est le moyen de corriger ce cas, puisqu'il estime la focale.
@@ -237,6 +269,8 @@ cd web && npm ci && node test/viewer.test.mjs /chemin/panoramas /chemin/captures
 - **Vitesse de rotation.** Tourner vite floute les photos et fait rater des positions. Le guidage
   déclenche quand la vitesse angulaire descend sous 0,5 rad/s ; un appui sur l'image force la prise
   si le déclenchement automatique ne se fait pas.
+- **Retour de capture.** Une vibration brève confirme chaque prise, sans bruit d'obturateur : une
+  capture guidée enchaîne une trentaine de photos et autant de déclics serait fatigant.
 - **Lumière.** L'exposition et la balance des blancs sont verrouillées au démarrage de la capture,
   ce qui évite les sauts de luminosité entre photos. En contrepartie, une pièce très contrastée
   (fenêtre en plein jour d'un côté, coin sombre de l'autre) sera correctement exposée d'un seul côté.
