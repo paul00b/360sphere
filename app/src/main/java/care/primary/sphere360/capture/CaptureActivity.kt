@@ -24,6 +24,7 @@ import care.primary.sphere360.data.CaptureSessionMeta
 import care.primary.sphere360.data.SessionState
 import care.primary.sphere360.data.ShotMeta
 import care.primary.sphere360.data.TourStore
+import care.primary.sphere360.stitch.StitchMode
 import care.primary.sphere360.stitch.StitchService
 import care.primary.sphere360.util.Bg
 import care.primary.sphere360.util.dpi
@@ -39,9 +40,12 @@ import java.io.File
 class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.SurfaceTextureListener {
 
     companion object {
-        private const val CAPTURE_ANGLE_DEG = 3.0
-        private const val MAX_ANGULAR_SPEED = 0.35 // rad/s
-        private const val ARM_DELAY_MS = 180L
+        private const val CAPTURE_ANGLE_DEG = 4.0
+        private const val MAX_ANGULAR_SPEED = 0.5 // rad/s
+        private const val ARM_DELAY_MS = 150L
+
+        /** Écart maximal toléré pour une prise déclenchée à la main. */
+        private const val MANUAL_ANGLE_DEG = 18.0
         private const val MIN_INTERVAL_MS = 450L
         private const val WATCHDOG_MS = 3500L
         private const val REQ_CAMERA = 11
@@ -144,6 +148,9 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
 
         preview.surfaceTextureListener = this
         btnStart.setOnClickListener { startGuidance() }
+        // Filet de sécurité : si le déclenchement automatique ne se fait pas (capteur lent,
+        // utilisateur qui n'arrive pas à stabiliser), un appui sur l'image force la prise.
+        overlay.setOnClickListener { captureManually() }
         btnClose.setOnClickListener { confirmCancel() }
         btnFinish.setOnClickListener { finishEarly() }
         btnFinish.visibility = View.INVISIBLE
@@ -349,7 +356,8 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
             Math.toDegrees(SphereMath.normalizeAngle(SphereMath.yawOf(f) - yaw0)),
             Math.toDegrees(SphereMath.pitchOf(f)),
             Math.toDegrees(SphereMath.rollOf(r)),
-            index
+            index,
+            r.copyOf()
         )
         capturing = true
         armedSince = 0L
@@ -363,6 +371,19 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         }
         watchdog = w
         Bg.main.postDelayed(w, WATCHDOG_MS)
+    }
+
+    /** Prise déclenchée par l'utilisateur sur la position visée la plus proche. */
+    private fun captureManually() {
+        if (!running || finishing || capturing) return
+        val index = overlay.nextIndex
+        if (index < 0 || index >= dirs.size) return
+        val angle = SphereMath.angleBetween(SphereMath.cameraForward(tracker.rotation), dirs[index])
+        if (angle > MANUAL_ANGLE_DEG * SphereMath.DEG) {
+            setHint(R.string.capture_hint_aim)
+            return
+        }
+        capture(index)
     }
 
     private fun cancelWatchdog() {
@@ -415,7 +436,7 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         setHint(R.string.capture_hint_done)
         s.state = SessionState.CAPTURED
         store.saveSession(s)
-        StitchService.enqueue(this, s.id, false)
+        StitchService.enqueue(this, s.id, StitchMode.SENSORS)
         toast(getString(R.string.capture_started_stitch))
         Bg.main.postDelayed({ finish() }, 700)
     }

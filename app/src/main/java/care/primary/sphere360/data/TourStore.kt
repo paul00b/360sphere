@@ -36,11 +36,15 @@ class TourStore(context: Context) {
     @Synchronized fun add(sphere: Sphere) { spheres[sphere.id] = sphere; save(); notifyChanged() }
     @Synchronized fun update(sphere: Sphere) { spheres[sphere.id] = sphere; save(); notifyChanged() }
 
-    /** Supprime la sphère, ses fichiers, et tous les portails qui pointaient vers elle. */
+    /**
+     * Supprime la sphère, ses fichiers, la session de capture conservée pour un éventuel
+     * réassemblage, et tous les portails qui pointaient vers elle.
+     */
     @Synchronized fun delete(id: String) {
-        spheres.remove(id) ?: return
+        val removed = spheres.remove(id) ?: return
         spheres.values.forEach { s -> s.portals.removeAll { it.toSphereId == id } }
         sphereDir(id).deleteRecursively()
+        if (removed.sessionId.isNotEmpty()) sessionDir(removed.sessionId).deleteRecursively()
         save(); notifyChanged()
     }
 
@@ -74,13 +78,24 @@ class TourStore(context: Context) {
         return try { CaptureSessionMeta.fromJson(JSONObject(f.readText())) } catch (e: Exception) { null }
     }
 
-    /** Sessions encore présentes (capturées, en cours d'assemblage ou en échec). */
+    /**
+     * Sessions à afficher dans la galerie : capturées, en cours d'assemblage ou en échec. Les
+     * sessions déjà assemblées sont conservées sur disque (photos réduites) pour permettre un
+     * réassemblage, mais n'apparaissent pas comme des entrées distinctes.
+     */
     fun listSessions(): List<CaptureSessionMeta> =
         (sessionsDir.listFiles() ?: emptyArray())
             .filter { it.isDirectory }
             .mapNotNull { loadSession(it.name) }
             .filter { it.state != SessionState.DONE }
             .sortedByDescending { it.createdAt }
+
+    /** La session existe-t-elle encore avec ses photos ? */
+    fun hasSessionImages(id: String): Boolean {
+        if (id.isEmpty()) return false
+        val dir = sessionDir(id)
+        return dir.isDirectory && (dir.listFiles()?.any { it.name.startsWith("shot_") } == true)
+    }
 
     fun deleteSession(id: String) {
         sessionDir(id).deleteRecursively()

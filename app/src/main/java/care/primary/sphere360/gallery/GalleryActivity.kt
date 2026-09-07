@@ -31,6 +31,7 @@ import care.primary.sphere360.data.TourStore
 import care.primary.sphere360.demo.DemoTourInstaller
 import care.primary.sphere360.util.Bg
 import care.primary.sphere360.stitch.StitchJobs
+import care.primary.sphere360.stitch.StitchMode
 import care.primary.sphere360.stitch.StitchService
 import care.primary.sphere360.util.Thumbs
 import care.primary.sphere360.util.padBottomWithNavBar
@@ -158,18 +159,39 @@ open class GalleryActivity : Activity() {
     private fun onItemClick(item: Item) {
         when (item) {
             is Item.SphereItem -> ViewerActivity.start(this, item.sphere.id)
-            is Item.SessionItem -> if (item.meta.state == SessionState.FAILED || !StitchJobs.isActive(item.meta.id)) retrySession(item.meta)
+            is Item.SessionItem -> if (!StitchJobs.isActive(item.meta.id)) showFailureDetails(item.meta)
         }
+    }
+
+    /** Détail complet de l'échec : le message tronqué de la vignette suffit rarement à comprendre. */
+    private fun showFailureDetails(meta: CaptureSessionMeta) {
+        val body = StringBuilder()
+        body.append(meta.error ?: getString(R.string.status_interrupted)).append("\n\n")
+        body.append(getString(R.string.failure_details, meta.shots.size, meta.targetCount, meta.attempts))
+        AlertDialog.Builder(this)
+            .setTitle(R.string.status_failed)
+            .setMessage(body.toString())
+            .setPositiveButton(R.string.action_retry) { _, _ -> retrySession(meta) }
+            .setNegativeButton(R.string.action_cancel, null)
+            .show()
     }
 
     private fun onItemLongClick(anchor: View, item: Item) {
         when (item) {
             is Item.SphereItem -> {
+                val sphere = item.sphere
                 val menu = PopupMenu(this, anchor)
                 menu.menu.add(0, 1, 0, R.string.action_rename)
-                menu.menu.add(0, 2, 1, R.string.action_delete)
+                if (sphere.method == "sensors" && store.hasSessionImages(sphere.sessionId)) {
+                    menu.menu.add(0, 3, 1, R.string.action_refine)
+                }
+                menu.menu.add(0, 2, 2, R.string.action_delete)
                 menu.setOnMenuItemClickListener {
-                    when (it.itemId) { 1 -> renameSphere(item.sphere); 2 -> confirmDeleteSphere(item.sphere) }
+                    when (it.itemId) {
+                        1 -> renameSphere(sphere)
+                        2 -> confirmDeleteSphere(sphere)
+                        3 -> confirmRefine(sphere)
+                    }
                     true
                 }
                 menu.show()
@@ -189,6 +211,19 @@ open class GalleryActivity : Activity() {
             .setPositiveButton(R.string.action_save) { _, _ ->
                 val name = edit.text.toString().trim()
                 if (name.isNotEmpty()) { sphere.name = name; store.update(sphere) }
+            }
+            .setNegativeButton(R.string.action_cancel, null)
+            .show()
+    }
+
+    /** Réassemble une sphère avec le recalage par points d'intérêt, plus lent et incertain. */
+    private fun confirmRefine(sphere: Sphere) {
+        AlertDialog.Builder(this)
+            .setTitle(R.string.refine_title)
+            .setMessage(R.string.refine_body)
+            .setPositiveButton(R.string.action_start) { _, _ ->
+                StitchService.enqueue(this, sphere.sessionId, StitchMode.REFINE)
+                toast(getString(R.string.capture_started_stitch))
             }
             .setNegativeButton(R.string.action_cancel, null)
             .show()
@@ -215,8 +250,7 @@ open class GalleryActivity : Activity() {
 
     private fun retrySession(meta: CaptureSessionMeta) {
         if (StitchJobs.isActive(meta.id)) return
-        val relaxed = meta.attempts >= 1
-        StitchService.enqueue(this, meta.id, relaxed)
+        StitchService.enqueue(this, meta.id, StitchMode.SENSORS)
         toast(getString(R.string.capture_started_stitch))
     }
 
@@ -246,6 +280,8 @@ open class GalleryActivity : Activity() {
                     val when_ = DateUtils.getRelativeTimeSpanString(this@GalleryActivity, s.createdAt, true)
                     val parts = mutableListOf(when_.toString())
                     if (s.shots > 0) parts.add(getString(R.string.status_shots, s.shots))
+                    if (s.method == "sensors") parts.add(getString(R.string.method_sensors_short))
+                    if (s.coverage < 0.90) parts.add(getString(R.string.meta_coverage, (s.coverage * 100).toInt()))
                     if (s.portals.isNotEmpty()) parts.add(getString(R.string.meta_portals, s.portals.size))
                     meta.text = parts.joinToString(" · ")
                     Thumbs.load(thumb, store.thumbFile(s.id), "thumb-" + s.id)

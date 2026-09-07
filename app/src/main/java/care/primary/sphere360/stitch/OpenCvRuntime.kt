@@ -22,6 +22,13 @@ object OpenCvRuntime {
 
     @Volatile private var loaded = false
 
+    /**
+     * Déclare les bibliothèques natives déjà chargées : utilisé par le banc de test desktop
+     * (tools/desktop), qui laisse JavaCPP extraire et charger les natives Linux depuis les jars.
+     */
+    @Synchronized
+    fun markPreloaded() { loaded = true }
+
     @Synchronized
     fun ensureLoaded() {
         if (loaded) return

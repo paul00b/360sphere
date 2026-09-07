@@ -32,6 +32,11 @@ incomplète, zones grises).
 vignette. En cas d'échec, un message explicite (photos qui ne se recoupent pas, déplacement pendant la
 capture, mémoire…) et un bouton « Réessayer » (réglages plus tolérants au second essai) ou « Supprimer ».
 
+**Assembler** : l'assemblage démarre seul à la fin de la capture et tourne en tâche de fond, avec une
+notification de progression. Comptez une poignée de secondes. Appui long sur une sphère puis
+« Affiner l'assemblage » pour tenter le recalage par points d'intérêt d'OpenCV, plus lent et plus
+incertain ; en cas d'échec la sphère existante est conservée.
+
 **Visualiser** : appui sur une vignette. Glisser pour regarder autour, pincer pour zoomer. Appui long
 sur une vignette : renommer / supprimer.
 
@@ -90,20 +95,67 @@ toujours dessinées au sol, sous l'horizon). Les modifications passent par `upda
 le panorama. Les angles sont en radians, convention Photo Sphere Viewer : yaw 0 au centre de l'image
 équirectangulaire, croissant vers la droite ; pitch positif vers le haut.
 
-### Du panorama OpenCV à l'équirectangulaire
+### Assemblage : deux chemins, une seule projection
 
-`cv::Stitcher` produit le rectangle englobant des images projetées sur la sphère, pas une image 2:1
-complète. `SphereStitcher` reproduit le calcul interne de `composePanorama` (échelle de composition,
-focale médiane, `warpRoi` de chaque caméra) pour connaître le coin haut-gauche du résultat dans le plan
-sphérique, le pose sur un canevas `2π·s × π·s` (cible 4096 × 2048, taille de texture sûre en WebGL
-mobile) avec gestion du passage ±180°, puis complète : trous entre photos (interpolation), colonnes non
-capturées (gris neutre, volontairement visible), calottes polaires (extrapolation floue de la couleur de
-bord convergeant vers une couleur uniforme au pôle, donc sans couture au zénith). Une vérification
-compare la taille du panorama à celle prédite ; en cas d'écart, repli sur un placement centré.
+L'assemblage part des photos réduites à 1280 px de côté et produit un équirectangulaire 4096 × 2048.
 
-Les orientations capteur enregistrées à chaque photo servent à construire le **masque
-d'appariement** d'OpenCV : seules les paires de photos qui se recouvrent géométriquement sont comparées.
-Ça divise le temps de calcul et évite les fausses correspondances entre murs semblables.
+**Chemin par défaut, guidé par les capteurs.** Chaque photo est reprojetée dans le canevas à partir
+de la matrice de rotation enregistrée au déclenchement (`GAME_ROTATION_VECTOR`, donc gyroscope et
+accéléromètre, sans magnétomètre) et de la focale déduite du champ de vue de la caméra. Les
+recouvrements sont fondus par un poids en cloche élevé au cube : chaque pixel vient pour l'essentiel
+de la photo qui le regarde le plus au centre, ce qui adoucit les raccords sans flouter l'image. Ce
+chemin ne dépend ni de la texture des murs ni de la lumière, et il aboutit toujours.
+
+**Chemin d'affinage, sur demande.** Le module stitching d'OpenCV recale les photos sur leurs points
+d'intérêt : détection SIFT, appariement des deux meilleurs voisins, plus grande composante connexe,
+estimation par homographies, ajustement de faisceau par rayons, redressement de l'horizon. Il corrige
+les erreurs de focale et les petits déplacements, mais il est lent et échoue régulièrement en
+intérieur (voir « Pourquoi le recalage n'est pas le chemin par défaut »). On lui demande seulement les
+rotations et les focales : la projection reste celle du chemin capteurs.
+
+Le repère du recalage est ensuite ramené sur celui des capteurs. OpenCV construit son repère autour
+de la photo qu'il choisit comme référence et ne redresse l'horizon qu'en moyennant les orientations
+des caméras ; le repère des capteurs, lui, tient sa verticale de la gravité et son azimut zéro de la
+première photo. La rotation entre les deux repères est estimée sur les photos présentes des deux
+côtés, par moyenne de quaternions. Les photos que le recalage a écartées reprennent leur orientation
+capteur, ce qui évite de laisser le plafond vide.
+
+Le résultat n'est retenu que s'il couvre au moins 97 % de ce que couvrent les capteurs, mesuré en
+angle solide sur une grille grossière. Sinon la sphère est recomposée depuis les capteurs seuls.
+
+### Pourquoi le recalage n'est pas le chemin par défaut
+
+Mesures sur le banc de test `tools/desktop`, qui rend des captures synthétiques depuis un panorama de
+référence et exécute le vrai code d'assemblage (4 cœurs x86_64, 30 photos par sphère) :
+
+| Capture | Capteurs | Recalage OpenCV |
+| --- | --- | --- |
+| Rotation pure, murs très texturés | 1,2 s, erreur 3,4 niveaux | 5,2 s, erreur 2,9 niveaux |
+| Tremblements 1,5°, roulis 3°, déplacement 6 cm, exposition ±4 % | 1,2 s, aboutit | 132 s, ajustement de faisceau non convergent |
+| Murs quasi unis | 1,2 s, aboutit | échoue sur assertion FLANN (corrigé par le filtrage) |
+
+L'erreur est la différence absolue moyenne en niveaux de gris face au panorama de référence. Le
+recalage apporte donc un gain marginal quand il réussit, pour un coût de deux ordres de grandeur et
+un taux d'échec élevé dès que la capture n'est pas parfaite. Sur un téléphone, comptez plusieurs
+minutes. D'où le choix : capteurs par défaut, recalage proposé par appui long sur une sphère.
+
+### Deux pannes trouvées par le banc de test
+
+Les deux erreurs remontées après la V2 sont reproduites et corrigées :
+
+- **« L'alignement a échoué »** (`ERR_CAMERA_PARAMS_ADJUST_FAIL`). Le masque d'appariement comparait
+  séparément l'écart d'azimut et l'écart d'élévation, ce qui excluait les voisins diagonaux : le
+  graphe d'appariement était un arbre, sans aucun cycle, et l'ajustement de faisceau n'y converge
+  pas. Le critère porte maintenant sur l'angle entre les axes optiques comparé au champ de vue
+  diagonal, ce qui donne au moins trois voisins par position (vérifié par un test).
+- **« Erreur pendant l'assemblage : OpenCV … »** Une photo sans texture (mur uni, plafond) produit
+  moins de deux descripteurs SIFT. La recherche des deux plus proches voisins de FLANN échoue alors
+  sur une assertion et fait tomber tout l'assemblage. Les photos comptant moins de douze points
+  d'intérêt sont désormais écartées du recalage, et replacées par leur orientation capteur.
+
+Un troisième défaut a été trouvé au passage : `Stitcher.setWarper` prend un pointeur partagé C++,
+et lui confier un objet alloué côté Java crée une double propriété (le ramasse-miettes de la machine
+virtuelle et le pointeur C++ libèrent le même objet). Le code n'appelle plus ce point d'entrée.
 
 ## Compiler
 
@@ -143,49 +195,68 @@ cd web && npm ci && node test/viewer.test.mjs /chemin/panoramas /chemin/captures
 
 ## État des tests
 
-- **Tests JVM** (20) : grille de capture, projection/orientation, géométrie équirectangulaire,
-  remplissage des pôles et trous, sérialisation JSON.
+- **Logique pure** : 29 tests JUnit sur machine virtuelle, sans Android ni OpenCV
+  (`tools/run-tests.sh`) : grille de capture et connexité du graphe d'appariement, géométrie des
+  capteurs et de la projection équirectangulaire, moyenne de rotations par quaternions, estimation
+  de couverture, remplissage des pôles, sérialisation du modèle.
+- **Assemblage** : banc de test `tools/desktop` qui rend des captures synthétiques depuis un
+  panorama de référence (tremblements, roulis, déplacement parasite, exposition, bruit, flou) et
+  exécute le vrai code d'assemblage avec les bibliothèques OpenCV Linux. Le chemin par défaut
+  aboutit sur les cinq conditions testées, y compris murs quasi unis et capture partielle, et reste
+  géométriquement exact : 5,1 niveaux de gris d'écart moyen face au panorama de référence sur une
+  capture idéale. Un passage avec `System.gc()` en continu vérifie qu'aucun objet natif n'est
+  libéré trop tôt.
 - **Viewer** : tests d'intégration Playwright dans Chromium headless (WebGL logiciel) :
   `web/test/viewer.test.mjs` (chargement, libellés, flèches 3D, navigation par portail avec vue
   d'arrivée dans la direction du portail, retour arrière, mode édition, mise à jour de nœud) et
   `web/test/demo.test.mjs` (parcours complet Salon ↔ Cuisine, Salon ↔ Chambre de la visite de démo).
-- **APK** : vérifiée structurellement (`aapt2 dump badging`, `apksigner verify`, classes dans le dex,
-  natives, assets).
-- **Non testé ici** : exécution sur un téléphone réel (pas d'émulateur ni d'appareil dans
-  l'environnement de build). La capture Camera2, les capteurs et l'assemblage OpenCV sur ARM sont
-  écrits d'après les APIs documentées et relus, mais c'est ton test sur téléphone qui tranche.
-  Les logs sont sous les tags `OpenCvRuntime`, `StitchService`, `Viewer`.
+- **APK** : structure, permissions, bibliothèques natives et signature vérifiées avec `aapt2` et
+  `apksigner`.
+- **Non testé** : l'application n'a pas tourné sur un téléphone réel. L'environnement de
+  compilation n'a ni appareil ni émulateur, et le SDK Android de Google y est inaccessible. Le flux
+  Camera2, le ressenti du guidage et le comportement des bibliothèques OpenCV sur ARM restent à
+  valider sur ton appareil.
 
 ## Limitations connues
 
-- **Qualité du stitching** : dépend de la texture des murs (un mur uni ne donne aucun point
-  d'intérêt), de la lumière (bruit en basse lumière), de la vitesse de rotation (flou de bougé) et du
-  respect de la rotation pure. Un déplacement du téléphone de quelques dizaines de centimètres crée de la
-  parallaxe sur les objets proches : raccords visibles ou échec « alignement ». Recommencer en gardant
-  le téléphone près du corps.
-- **Exposition verrouillée** au départ : commencer face à une zone représentative. Une fenêtre en
-  contre-jour dans le dos donnera une zone très sombre ou cramée.
-- **Pôles non capturés** : la grille couvre environ ±79° d'élévation. Zénith et nadir sont extrapolés
-  (couleur douce), pas photographiés. Pour une visite d'intérieur c'est en général invisible, mais le
-  plafond et le sol juste au-dessus/dessous de soi ne sont pas réels.
-- **Photos écartées** : si une photo ne se raccorde à aucune autre, OpenCV la retire ; la galerie
-  signale « N photo(s) non raccordée(s) » et la zone correspondante est extrapolée. Si moins de la
-  moitié des photos sont raccordées, l'assemblage est déclaré en échec.
-- **Fin anticipée** : les colonnes d'azimut jamais photographiées apparaissent en gris neutre.
-- **Temps et mémoire** : ~30 photos ramenées à 1280 px, SIFT (1500 points/image), composition à
-  4096 px : comptez 30 s à 2 min selon le téléphone, quelques centaines de Mo de mémoire native.
-  Sur un téléphone à 3 Go, fermer les autres applications.
-- **Capteurs** : le guidage utilise `GAME_ROTATION_VECTOR` (gyroscope + accéléromètre). Sans
-  gyroscope, `ROTATION_VECTOR` (magnétomètre) est utilisé et peut sauter près de métal ou
-  d'électronique.
-- **Architecture** : APK arm64 uniquement (JavaCPP ne publie plus de natives Android 32 bits).
-- **Résolution** : équirectangulaire 4096 × 2048 (compromis qualité / mémoire GPU des WebView mobiles).
-- **Portails** : la flèche 3D est toujours affichée au sol dans la direction du portail (comportement du
-  VirtualTourPlugin), c'est le libellé qui marque l'endroit exact touché. Le portail retour créé
+- **Qualité des raccords.** Le chemin par défaut suppose une rotation pure autour de l'objectif. Tout
+  déplacement latéral (se pencher, tourner autour de son épaule plutôt qu'autour du téléphone) crée
+  une parallaxe que la projection ne peut pas corriger : les objets proches se dédoublent aux
+  jointures. Les murs lointains restent nets. L'affinage par recalage corrige une partie de ces
+  petits déplacements quand il aboutit.
+- **Précision du champ de vue.** La focale vient des métadonnées de la caméra (taille physique du
+  capteur et longueur focale). Si le pilote les renseigne mal, toutes les jointures sont décalées de
+  la même façon. L'affinage par recalage est le moyen de corriger ce cas, puisqu'il estime la focale.
+- **Zénith et nadir.** La grille photographie trois rangées et ne monte pas au-delà de 85° environ :
+  il reste une calotte au sommet et une au sol, soit à peu près 3 % de la sphère de chaque côté.
+  Elles sont extrapolées par fondu des couleurs de bord, sans détail. Le nadir montre souvent un
+  léger étirement vertical.
+- **Dérive du gyroscope.** L'orientation vient d'un capteur fusionné sans magnétomètre : sur une
+  capture longue (plus d'une minute), une dérive de quelques degrés en azimut est possible et se
+  traduit par un raccord visible au point de bouclage.
+- **Vitesse de rotation.** Tourner vite floute les photos et fait rater des positions. Le guidage
+  déclenche quand la vitesse angulaire descend sous 0,5 rad/s ; un appui sur l'image force la prise
+  si le déclenchement automatique ne se fait pas.
+- **Lumière.** L'exposition et la balance des blancs sont verrouillées au démarrage de la capture,
+  ce qui évite les sauts de luminosité entre photos. En contrepartie, une pièce très contrastée
+  (fenêtre en plein jour d'un côté, coin sombre de l'autre) sera correctement exposée d'un seul côté.
+- **Recalage par points d'intérêt.** Lent (une à deux minutes pour 30 photos) et sans garantie
+  d'aboutir : murs unis, faible lumière ou rotation rapide le font échouer. C'est pour cela qu'il
+  n'est pas le chemin par défaut.
+- **Stockage.** Les photos réduites sont conservées après l'assemblage pour permettre un affinage
+  ultérieur, soit environ 5 à 10 Mo par sphère en plus de l'équirectangulaire. Elles sont supprimées
+  avec la sphère.
+- **Résolution.** Équirectangulaire 4096 × 2048, compromis entre détail et mémoire GPU des WebView
+  mobiles.
+- **Portails.** La flèche 3D est toujours affichée au sol dans la direction du portail (comportement
+  du VirtualTourPlugin), c'est le libellé qui marque l'endroit exact touché. Le portail retour créé
   automatiquement est placé à l'opposé de la direction d'arrivée : à ajuster avec « Déplacer » si la
-  porte n'est pas en face. Pas de correction d'orientation entre sphères (pas de boussole) : deux
-  sphères capturées ont chacune leur yaw 0 = direction de la première photo.
-- **Démo** : panoramas synthétiques (pas de photos réelles disponibles dans l'environnement de build).
+  porte n'est pas en face. Il n'y a pas de correction d'orientation entre sphères : chacune a son
+  azimut zéro sur la direction de sa première photo.
+- **Matériel.** APK arm64 uniquement (aucun téléphone Android récent n'est en 32 bits). Android 8.0
+  minimum. Un capteur d'orientation fusionné est requis.
+- **Démo.** Panoramas synthétiques : aucune banque de photos n'était accessible depuis
+  l'environnement de compilation.
 
 ## Licences des briques
 

@@ -37,14 +37,43 @@ class CaptureGridTest {
 
     @Test
     fun overlapDetectsNeighboursOnly() {
-        assertTrue(CaptureGrid.overlaps(0.0, 0.0, 30.0, 0.0, 50.0, 66.0))
-        assertTrue(CaptureGrid.overlaps(0.0, 0.0, 20.0, 46.0, 50.0, 66.0))
-        assertFalse(CaptureGrid.overlaps(0.0, 0.0, 180.0, 0.0, 50.0, 66.0))
-        assertFalse(CaptureGrid.overlaps(0.0, -46.0, 0.0, 46.0, 50.0, 66.0))
-        // près des rangées inclinées, un grand écart d'azimut reste un recouvrement
-        assertTrue(CaptureGrid.overlaps(0.0, 46.0, 45.0, 46.0, 50.0, 66.0))
+        // voisins immédiats de la rangée du milieu
+        assertTrue(CaptureGrid.overlaps(0.0, 0.0, 30.0, 0.0, 50.0, 64.0))
+        // voisin diagonal de la rangée inclinée : c'est ce cas qui donne les cycles du graphe
+        assertTrue(CaptureGrid.overlaps(0.0, 0.0, 20.0, 45.0, 50.0, 64.0))
+        assertTrue(CaptureGrid.overlaps(0.0, 46.0, 40.0, 46.0, 50.0, 64.0))
         // passage ±180°
-        assertTrue(CaptureGrid.overlaps(170.0, 0.0, -170.0, 0.0, 50.0, 66.0))
+        assertTrue(CaptureGrid.overlaps(170.0, 0.0, -170.0, 0.0, 50.0, 64.0))
+        // opposés : aucun recouvrement
+        assertFalse(CaptureGrid.overlaps(0.0, 0.0, 180.0, 0.0, 50.0, 64.0))
+        assertFalse(CaptureGrid.overlaps(0.0, 0.0, 90.0, 0.0, 50.0, 64.0))
+        assertFalse(CaptureGrid.overlaps(0.0, -46.0, 0.0, 46.0, 50.0, 64.0))
+    }
+
+    @Test
+    fun theMatchingGraphHasCycles() {
+        // Un graphe en arbre suffit à faire échouer l'ajustement de faisceau d'OpenCV : chaque
+        // position doit avoir au moins trois voisins pour que des boucles se forment.
+        val plan = CaptureGrid.build(50.0, 64.0)
+        val degrees = plan.targets.map { t ->
+            plan.targets.count { o ->
+                o.index != t.index && CaptureGrid.overlaps(t.yawDeg, t.pitchDeg, o.yawDeg, o.pitchDeg, 50.0, 64.0)
+            }
+        }
+        assertTrue("degré minimum ${degrees.min()}", degrees.min()!! >= 3)
+        val edges = degrees.sum() / 2
+        assertTrue("arêtes $edges pour ${plan.size} positions", edges > plan.size + 5)
+    }
+
+    @Test
+    fun axisAngleIsSymmetricAndBounded() {
+        assertEquals(0.0, CaptureGrid.axisAngleDeg(12.0, 34.0, 12.0, 34.0), 1e-9)
+        assertEquals(90.0, CaptureGrid.axisAngleDeg(0.0, 0.0, 90.0, 0.0), 1e-9)
+        assertEquals(180.0, CaptureGrid.axisAngleDeg(0.0, 0.0, 180.0, 0.0), 1e-9)
+        assertEquals(
+            CaptureGrid.axisAngleDeg(20.0, 10.0, -50.0, 30.0),
+            CaptureGrid.axisAngleDeg(-50.0, 30.0, 20.0, 10.0), 1e-12
+        )
     }
 
     @Test

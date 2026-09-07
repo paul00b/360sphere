@@ -10,7 +10,7 @@ OUT="$ROOT/build/tests"
 rm -rf "$OUT" && mkdir -p "$OUT"
 # Fichiers de logique pure (aucune dépendance Android ni OpenCV)
 J="$ROOT/app/src/main/java/care/primary/sphere360"
-SRC="$J/capture/SphereMath.kt $J/capture/CaptureGrid.kt $J/stitch/EquirectGeometry.kt $J/stitch/EquirectFill.kt $J/data/Models.kt"
+SRC="$J/capture/SphereMath.kt $J/capture/CaptureGrid.kt $J/stitch/PanoGeometry.kt $J/stitch/ShotView.kt $J/stitch/EquirectFill.kt $J/data/Models.kt"
 CP="$LIBS/json.jar:$LIBS/junit.jar:$LIBS/hamcrest-core.jar"
 "$KOTLINC" -classpath "$CP" -d "$OUT/classes" $SRC $(find "$ROOT/app/src/test/java" -name '*.kt') 2>&1 | grep -v "^warning: " || true
 TESTS=$(cd "$OUT/classes" && find . -name '*Test.class' | sed 's#^\./##; s#\.class$##; s#/#.#g' | tr '\n' ' ')

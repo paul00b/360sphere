@@ -33,13 +33,20 @@ class Sphere(
     val portals: MutableList<Portal> = mutableListOf(),
     val demo: Boolean = false,
     var shots: Int = 0,
-    var usedShots: Int = 0
+    var usedShots: Int = 0,
+    /** "features" si le recalage par points d'intérêt a été retenu, "sensors" sinon. */
+    var method: String = "",
+    /** Part de la sphère réellement photographiée, en angle solide. */
+    var coverage: Double = 1.0,
+    /** Session de capture conservée (photos réduites) permettant de réassembler la sphère. */
+    var sessionId: String = ""
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("id", id).put("name", name).put("createdAt", createdAt)
         .put("width", width).put("height", height)
         .put("defaultYaw", defaultYaw).put("defaultPitch", defaultPitch)
         .put("demo", demo).put("shots", shots).put("usedShots", usedShots)
+        .put("method", method).put("coverage", coverage).put("sessionId", sessionId)
         .put("portals", JSONArray().also { a -> portals.forEach { a.put(it.toJson()) } })
 
     companion object {
@@ -51,21 +58,49 @@ class Sphere(
                 o.getString("id"), o.getString("name"), o.getLong("createdAt"),
                 o.getInt("width"), o.getInt("height"),
                 o.optDouble("defaultYaw", 0.0), o.optDouble("defaultPitch", 0.0),
-                portals, o.optBoolean("demo", false), o.optInt("shots", 0), o.optInt("usedShots", 0)
+                portals, o.optBoolean("demo", false), o.optInt("shots", 0), o.optInt("usedShots", 0),
+                o.optString("method", ""), o.optDouble("coverage", 1.0), o.optString("sessionId", "")
             )
         }
     }
 }
 
-/** Une photo individuelle d'une session de capture, avec l'orientation du téléphone au déclenchement. */
-class ShotMeta(val file: String, val yawDeg: Double, val pitchDeg: Double, val rollDeg: Double, val targetIndex: Int) {
-    fun toJson(): JSONObject = JSONObject()
-        .put("file", file).put("yaw", yawDeg).put("pitch", pitchDeg).put("roll", rollDeg).put("target", targetIndex)
+/**
+ * Une photo individuelle d'une session de capture, avec l'orientation du téléphone au déclenchement.
+ *
+ * `rotation` est la matrice 3x3 (ligne par ligne) appareil → monde fournie par les capteurs. C'est
+ * elle qui permet de recomposer la sphère sans appariement de points ; yaw/pitch/roll n'en sont
+ * qu'un résumé lisible, utilisé pour le masque d'appariement et les diagnostics.
+ */
+class ShotMeta(
+    val file: String,
+    val yawDeg: Double,
+    val pitchDeg: Double,
+    val rollDeg: Double,
+    val targetIndex: Int,
+    val rotation: FloatArray? = null
+) {
+    fun toJson(): JSONObject {
+        val o = JSONObject()
+            .put("file", file).put("yaw", yawDeg).put("pitch", pitchDeg).put("roll", rollDeg).put("target", targetIndex)
+        val r = rotation
+        if (r != null && r.size == 9) {
+            val a = JSONArray()
+            r.forEach { a.put(it.toDouble()) }
+            o.put("rot", a)
+        }
+        return o
+    }
 
     companion object {
-        fun fromJson(o: JSONObject) = ShotMeta(
-            o.getString("file"), o.getDouble("yaw"), o.getDouble("pitch"), o.optDouble("roll", 0.0), o.optInt("target", -1)
-        )
+        fun fromJson(o: JSONObject): ShotMeta {
+            val arr = o.optJSONArray("rot")
+            val rot = if (arr != null && arr.length() == 9) FloatArray(9) { arr.getDouble(it).toFloat() } else null
+            return ShotMeta(
+                o.getString("file"), o.getDouble("yaw"), o.getDouble("pitch"), o.optDouble("roll", 0.0),
+                o.optInt("target", -1), rot
+            )
+        }
     }
 }
 

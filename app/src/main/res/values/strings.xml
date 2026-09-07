@@ -78,7 +78,13 @@
     <string name="stitch_error_generic">Erreur pendant l\'assemblage : %1$s</string>
     <string name="stitch_error_memory">Mémoire insuffisante pour assembler la sphère.</string>
     <string name="stitch_warning_dropped">%1$d photo(s) non raccordée(s)</string>
-    <string name="retry_relaxed_hint">Réessayer avec des réglages plus tolérants</string>
+    <string name="stitch_method_sensors">assemblée depuis les capteurs</string>
+    <string name="method_sensors_short">capteurs</string>
+    <string name="meta_coverage">%1$d %% de la sphère</string>
+    <string name="failure_details">%1$d photos prises sur %2$d positions · %3$d tentative(s) d\'assemblage.</string>
+    <string name="action_refine">Affiner l\'assemblage</string>
+    <string name="refine_title">Affiner l\'assemblage ?</string>
+    <string name="refine_body">La sphère sera réassemblée en recalant les photos sur leurs points d\'intérêt, ce qui corrige les erreurs de focale et les petits déplacements. Compte une à deux minutes, et sur des murs unis ou en faible lumière le recalage peut ne pas aboutir : la sphère actuelle est alors conservée.</string>
     <string name="recapture">Recapturer</string>
 
     <!-- Viewer -->

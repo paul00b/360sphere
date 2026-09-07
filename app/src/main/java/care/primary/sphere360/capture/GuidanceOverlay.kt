@@ -23,6 +23,11 @@ import kotlin.math.tan
  */
 class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: AttributeSet? = null) : View(context, attrs) {
 
+    init {
+        isClickable = true
+        isFocusable = false
+    }
+
     var plan: CapturePlan? = null
     var dirs: Array<Vec3> = emptyArray()
     var captured: BooleanArray = BooleanArray(0)

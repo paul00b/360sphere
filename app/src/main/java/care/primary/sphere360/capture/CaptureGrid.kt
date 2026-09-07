@@ -1,9 +1,11 @@
 package care.primary.sphere360.capture
 
-import kotlin.math.abs
+import kotlin.math.atan
 import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.max
+import kotlin.math.sqrt
+import kotlin.math.tan
 
 /** Une position à photographier (angles relatifs à la direction de départ, en degrés). */
 class CaptureTarget(val index: Int, val row: Int, val yawDeg: Double, val pitchDeg: Double)
@@ -23,6 +25,9 @@ class CapturePlan(val targets: List<CaptureTarget>, val rowPitches: List<Double>
  */
 object CaptureGrid {
     const val DEFAULT_OVERLAP = 0.40
+
+    /** Fraction du champ de vue diagonal en dessous de laquelle deux prises se recouvrent utilement. */
+    const val OVERLAP_ANGLE_FACTOR = 0.80
 
     fun build(hfovDeg: Double, vfovDeg: Double, overlap: Double = DEFAULT_OVERLAP): CapturePlan {
         val hf = hfovDeg.coerceIn(30.0, 100.0)
@@ -44,14 +49,29 @@ object CaptureGrid {
 
     /**
      * Deux photos se recouvrent-elles assez pour être appariées ? Sert à construire le masque
-     * d'appariement d'OpenCV (évite les fausses correspondances entre murs semblables et
-     * divise le temps de calcul).
+     * d'appariement d'OpenCV : il évite les fausses correspondances entre murs semblables et
+     * divise le temps de calcul.
+     *
+     * Le critère porte sur l'angle entre les axes optiques, comparé au champ de vue diagonal. Un
+     * critère séparé en azimut et en élévation exclut à tort les voisins diagonaux et laisse un
+     * graphe d'appariement sans cycle, sur lequel l'ajustement de faisceau ne converge pas.
      */
     fun overlaps(yaw1: Double, pitch1: Double, yaw2: Double, pitch2: Double, hfovDeg: Double, vfovDeg: Double): Boolean {
-        val dPitch = abs(pitch1 - pitch2)
-        if (dPitch > vfovDeg * 0.95) return false
-        val meanPitch = (pitch1 + pitch2) / 2
-        val dYaw = abs(SphereMath.normalizeDeg(yaw1 - yaw2)) * cos(meanPitch * SphereMath.DEG)
-        return dYaw < hfovDeg * 0.95
+        val angle = axisAngleDeg(yaw1, pitch1, yaw2, pitch2)
+        return angle < diagonalFovDeg(hfovDeg, vfovDeg) * OVERLAP_ANGLE_FACTOR
+    }
+
+    /** Angle entre les axes optiques de deux prises, en degrés. */
+    fun axisAngleDeg(yaw1: Double, pitch1: Double, yaw2: Double, pitch2: Double): Double {
+        val a = SphereMath.dirFromYawPitch(yaw1 * SphereMath.DEG, pitch1 * SphereMath.DEG)
+        val b = SphereMath.dirFromYawPitch(yaw2 * SphereMath.DEG, pitch2 * SphereMath.DEG)
+        return SphereMath.angleBetween(a, b) * SphereMath.RAD
+    }
+
+    /** Champ de vue diagonal d'un objectif rectilinéaire, en degrés. */
+    fun diagonalFovDeg(hfovDeg: Double, vfovDeg: Double): Double {
+        val th = tan(hfovDeg * SphereMath.DEG / 2)
+        val tv = tan(vfovDeg * SphereMath.DEG / 2)
+        return 2 * atan(sqrt(th * th + tv * tv)) * SphereMath.RAD
     }
 }

@@ -1,262 +1,302 @@
 package care.primary.sphere360.stitch
 
-import care.primary.sphere360.capture.CaptureGrid
+import android.util.Log
 import care.primary.sphere360.data.CaptureSessionMeta
-import org.bytedeco.javacpp.Pointer
+import care.primary.sphere360.data.ShotMeta
 import org.bytedeco.opencv.global.opencv_core
 import org.bytedeco.opencv.global.opencv_imgcodecs
 import org.bytedeco.opencv.global.opencv_imgproc
-import org.bytedeco.opencv.global.opencv_stitching
 import org.bytedeco.opencv.opencv_core.Mat
-import org.bytedeco.opencv.opencv_core.MatVector
-import org.bytedeco.opencv.opencv_core.Point2f
-import org.bytedeco.opencv.opencv_core.Rect
-import org.bytedeco.opencv.opencv_core.Scalar
 import org.bytedeco.opencv.opencv_core.Size
-import org.bytedeco.opencv.opencv_core.UMat
-import org.bytedeco.opencv.opencv_features2d.SIFT
-import org.bytedeco.opencv.opencv_stitching.SphericalWarper
-import org.bytedeco.opencv.opencv_stitching.Stitcher
 import java.io.File
+import kotlin.math.abs
 import kotlin.math.max
-import kotlin.math.min
 import kotlin.math.roundToInt
 
-class StitchResult(val width: Int, val height: Int, val defaultYaw: Double, val usedShots: Int, val totalShots: Int)
+enum class StitchMethod { FEATURES, SENSORS }
+
+/**
+ * Choix du chemin d'assemblage.
+ *
+ * `SENSORS` recompose depuis les orientations mesurées : environ une seconde de calcul par sphère,
+ * et cela aboutit toujours. `REFINE` tente d'abord le recalage par points d'intérêt d'OpenCV, qui
+ * corrige les erreurs de focale et les petites translations mais coûte une à deux minutes et
+ * échoue régulièrement en intérieur ; on retombe alors sur les capteurs.
+ */
+enum class StitchMode { SENSORS, REFINE }
+
+class StitchResult(
+    val width: Int,
+    val height: Int,
+    val defaultYaw: Double,
+    val usedShots: Int,
+    val totalShots: Int,
+    val method: StitchMethod,
+    val coverage: Double
+)
 
 class StitchException(val kind: Kind, message: String, val used: Int = 0, val total: Int = 0) : Exception(message) {
     enum class Kind { NEED_MORE, HOMOGRAPHY, ADJUST, PARTIAL, MEMORY, GENERIC }
 }
 
 /**
- * Assemblage d'une sphère avec cv::Stitcher (mode PANORAMA : warper sphérique, ajustement de
- * faisceau par rayons, correction d'ondulation), puis placement exact du résultat sur un canevas
- * équirectangulaire 2:1 et remplissage des zones non couvertes.
+ * Assemble une sphère à partir d'une session de capture.
+ *
+ * Deux chemins, une seule projection :
+ *  1. recalage par points d'intérêt avec le module Stitcher d'OpenCV — meilleure qualité, corrige
+ *     les erreurs de focale et les petites translations, mais échoue sur murs unis, faible lumière
+ *     ou rotation trop rapide ;
+ *  2. recomposition depuis les orientations mesurées par les capteurs — aboutit toujours, avec des
+ *     raccords visibles là où l'utilisateur s'est déplacé.
+ *
+ * Le premier chemin n'est retenu que s'il conserve la grande majorité des photos ; sinon on
+ * recompose depuis les capteurs, ce qui vaut mieux qu'une sphère amputée de la moitié de la pièce.
  */
 class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
 
     companion object {
-        /** Largeur cible de l'équirectangulaire (texture WebGL sûre sur mobile). */
+        private const val TAG = "SphereStitcher"
+
+        /** Largeur de l'équirectangulaire : compromis entre détail et mémoire GPU des WebView mobiles. */
         const val TARGET_WIDTH = 4096
+
+        /** Côté long des photos utilisées pour le calcul (le recalage n'a pas besoin de la pleine résolution). */
         private const val MAX_INPUT_SIDE = 1280
-        private const val REGISTRATION_RESOL_MP = 0.6
-        private const val SEAM_RESOL_MP = 0.1
+
+        /**
+         * Fraction minimale de photos que le recalage doit raccorder. Les photos écartées sont
+         * replacées grâce à leur orientation capteur, donc le seuil peut rester bas.
+         */
+        private const val MIN_KEPT_RATIO = 0.55
+
+        /**
+         * Le recalage doit couvrir au moins cette fraction de ce que couvrent les capteurs pour
+         * être préféré. Comparer à la couverture des capteurs plutôt qu'à une valeur absolue rend
+         * le critère valable aussi pour une capture volontairement partielle.
+         */
+        private const val MIN_RELATIVE_COVERAGE = 0.97
     }
 
-    fun stitch(sessionDir: File, meta: CaptureSessionMeta, outEquirect: File, outThumb: File, relaxed: Boolean): StitchResult {
+    fun stitch(
+        sessionDir: File,
+        meta: CaptureSessionMeta,
+        outEquirect: File,
+        outThumb: File,
+        mode: StitchMode
+    ): StitchResult {
         OpenCvRuntime.ensureLoaded()
-        progress(StitchJobs.Stage.LOADING, 2)
+        progress(StitchJobs.Stage.LOADING, 1)
 
         val shots = meta.shots.filter { File(sessionDir, it.file).exists() }
         if (shots.size < 2) throw StitchException(StitchException.Kind.NEED_MORE, "moins de 2 photos")
 
         val images = ArrayList<Mat>()
-        val usedShotIdx = ArrayList<Int>()
+        val kept = ArrayList<ShotMeta>()
         try {
-            // ---- 1. Chargement (orientation EXIF appliquée par imread) ----
             for ((i, shot) in shots.withIndex()) {
-                val m = opencv_imgcodecs.imread(File(sessionDir, shot.file).absolutePath, opencv_imgcodecs.IMREAD_COLOR)
-                if (m == null || m.empty()) { m?.close(); continue }
-                var img = m
-                if (img.cols() > img.rows() && meta.camera.width < meta.camera.height) {
-                    // l'orientation JPEG n'a pas été appliquée : on la rétablit nous-mêmes
-                    val rotated = Mat()
-                    val code = if (meta.camera.jpegRotation == 270) opencv_core.ROTATE_90_COUNTERCLOCKWISE else opencv_core.ROTATE_90_CLOCKWISE
-                    opencv_core.rotate(img, rotated, code)
-                    img.close(); img = rotated
+                val m = load(sessionDir, shot, meta) ?: continue
+                if (images.isNotEmpty() && (m.cols() != images[0].cols() || m.rows() != images[0].rows())) {
+                    // Tailles hétérogènes : la focale et le centre optique ne seraient plus valables.
+                    m.close(); continue
                 }
-                val longSide = max(img.cols(), img.rows())
-                if (longSide > MAX_INPUT_SIDE) {
-                    val s = MAX_INPUT_SIDE.toDouble() / longSide
-                    val resized = Mat()
-                    opencv_imgproc.resize(img, resized, Size((img.cols() * s).roundToInt(), (img.rows() * s).roundToInt()), 0.0, 0.0, opencv_imgproc.INTER_AREA)
-                    img.close(); img = resized
-                }
-                images.add(img)
-                usedShotIdx.add(i)
-                progress(StitchJobs.Stage.LOADING, 2 + 10 * (i + 1) / shots.size)
+                images.add(m)
+                kept.add(shot)
+                progress(StitchJobs.Stage.LOADING, 1 + 9 * (i + 1) / shots.size)
             }
-            val n = images.size
-            if (n < 2) throw StitchException(StitchException.Kind.NEED_MORE, "photos illisibles")
-            val fullW = images[0].cols()
-            val fullH = images[0].rows()
+            if (images.size < 2) throw StitchException(StitchException.Kind.NEED_MORE, "photos illisibles")
 
-            // ---- 2. Masque d'appariement à partir des orientations capteur ----
-            val mask = Mat(n, n, opencv_core.CV_8U, Scalar.all(0.0))
-            for (i in 0 until n) {
-                val si = shots[usedShotIdx[i]]
-                for (j in 0 until n) {
-                    if (i == j) continue
-                    val sj = shots[usedShotIdx[j]]
-                    val ok = CaptureGrid.overlaps(si.yawDeg, si.pitchDeg, sj.yawDeg, sj.pitchDeg, meta.camera.hfovDeg, meta.camera.vfovDeg)
-                    if (ok) mask.ptr(i).put(j.toLong(), 1.toByte())
-                }
-            }
-            val umask = UMat()
-            mask.copyTo(umask)
-
-            // ---- 3. Configuration du Stitcher ----
-            val stitcher = Stitcher.create(Stitcher.PANORAMA)
-            stitcher.setRegistrationResol(REGISTRATION_RESOL_MP)
-            stitcher.setSeamEstimationResol(SEAM_RESOL_MP)
-            stitcher.setPanoConfidenceThresh(if (relaxed) 0.6 else 0.85)
-            stitcher.setWaveCorrection(true)
-            stitcher.setWaveCorrectKind(opencv_stitching.WAVE_CORRECT_HORIZ)
-            stitcher.setWarper(SphericalWarper())
-            stitcher.setFeaturesFinder(SIFT.create(if (relaxed) 2500 else 1500, 3, 0.04, 10.0, 1.6, false))
-            stitcher.setMatchingMask(umask)
-
-            val vec = MatVector(*images.toTypedArray())
-            progress(StitchJobs.Stage.ALIGN, 15)
-
-            // ---- 4. Estimation (détection, appariement, ajustement de faisceau) ----
-            val status = stitcher.estimateTransform(vec)
-            when (status) {
-                Stitcher.OK -> {}
-                Stitcher.ERR_NEED_MORE_IMGS -> throw StitchException(StitchException.Kind.NEED_MORE, "ERR_NEED_MORE_IMGS")
-                Stitcher.ERR_HOMOGRAPHY_EST_FAIL -> throw StitchException(StitchException.Kind.HOMOGRAPHY, "ERR_HOMOGRAPHY_EST_FAIL")
-                Stitcher.ERR_CAMERA_PARAMS_ADJUST_FAIL -> throw StitchException(StitchException.Kind.ADJUST, "ERR_CAMERA_PARAMS_ADJUST_FAIL")
-                else -> throw StitchException(StitchException.Kind.GENERIC, "status $status")
-            }
-            progress(StitchJobs.Stage.ALIGN, 60)
-
-            val cams = stitcher.cameras()
-            val used = cams.size().toInt()
-            if (used < 2) throw StitchException(StitchException.Kind.NEED_MORE, "moins de 2 caméras estimées")
-            if (used < max(2, (n * 0.5).roundToInt())) {
-                throw StitchException(StitchException.Kind.PARTIAL, "seulement $used/$n photos raccordées", used, n)
-            }
-            val component = stitcher.component()
-            val compIdx = IntArray(used) { component.get(it.toLong()) }
-
-            // ---- 5. Échelle de composition pour viser TARGET_WIDTH ----
-            val focals = DoubleArray(used) { cams.get(it.toLong()).focal() }
-            val workScale = stitcher.workScale()
-            val fMed = EquirectGeometry.medianFocal(focals)
-            val fullScale = fMed / workScale                       // px par radian à pleine résolution
-            val targetScale = TARGET_WIDTH / (2 * Math.PI)
-            val composeScale = min(1.0, targetScale / fullScale)
-            val composeResol = composeScale * composeScale * fullW * fullH / 1e6
-            stitcher.setCompositingResol(composeResol)
-
-            // Réplique du calcul interne de composePanorama pour connaître le repère du résultat.
-            val cs = EquirectGeometry.composeScale(composeResol, fullW, fullH)
-            val cwa = (cs / workScale).toFloat()
-            val warpedScale = fMed.toFloat() * cwa
-            val composed = EquirectGeometry.composedSize(fullW, fullH, cs)
-            val warper = SphericalWarper().create(warpedScale)
-            val rois = ArrayList<IntRoi>()
-            val kMats = ArrayList<Mat>()
-            val rMats = ArrayList<Mat>()
-            for (i in 0 until used) {
-                val cam = cams.get(i.toLong())
-                val k = Mat(3, 3, opencv_core.CV_32F, Scalar.all(0.0))
-                val kp = k.ptr()
-                val f = (cam.focal() * cwa).toFloat()
-                putFloat(kp, 0, f); putFloat(kp, 2, (cam.ppx() * cwa).toFloat())
-                putFloat(kp, 4, (f * cam.aspect()).toFloat()); putFloat(kp, 5, (cam.ppy() * cwa).toFloat())
-                putFloat(kp, 8, 1f)
-                val r = Mat()
-                cam.R().convertTo(r, opencv_core.CV_32F)
-                val roi: Rect = warper.warpRoi(Size(composed[0], composed[1]), k, r)
-                rois.add(IntRoi(roi.x(), roi.y(), roi.width(), roi.height()))
-                roi.close()
-                kMats.add(k); rMats.add(r)
-            }
-            val union = EquirectGeometry.union(rois)
-
-            // ---- 6. Composition ----
-            progress(StitchJobs.Stage.COMPOSE, 65)
-            val pano = Mat()
-            val st2 = stitcher.composePanorama(pano)
-            if (st2 != Stitcher.OK) throw StitchException(StitchException.Kind.GENERIC, "composePanorama $st2")
-            val maskU = stitcher.resultMask()
-            val panoMask = Mat()
-            maskU.copyTo(panoMask)
-            progress(StitchJobs.Stage.FINALIZE, 85)
-
-            val geometryTrusted = pano.cols() == union.width && pano.rows() == union.height
-            val canvasSize = EquirectGeometry.canvasSize(warpedScale.toDouble())
-            val cw = canvasSize[0]
-            val ch = canvasSize[1]
-            val tlX: Int
-            val tlY: Int
-            if (geometryTrusted) {
-                tlX = union.x; tlY = union.y
-            } else {
-                // repli : panorama centré (couverture symétrique haut/bas supposée)
-                tlX = -pano.cols() / 2; tlY = (ch - pano.rows()) / 2
+            val imgW = images[0].cols()
+            val imgH = images[0].rows()
+            val source = object : ImageSource {
+                override val size: Int get() = images.size
+                override fun get(index: Int): Mat? = images.getOrNull(index)
+                override fun release(index: Int) {}
             }
 
-            val canvas = Mat(ch, cw, opencv_core.CV_8UC3, Scalar.all(0.0))
-            val cmask = Mat(ch, cw, opencv_core.CV_8U, Scalar.all(0.0))
-            val rowStart = max(0, -tlY)
-            val rowEnd = min(pano.rows(), ch - tlY)
-            if (rowEnd > rowStart) {
-                for (seg in EquirectGeometry.columnSegments(tlX, pano.cols(), cw)) {
-                    val srcRect = Rect(seg[0], rowStart, seg[2], rowEnd - rowStart)
-                    val dstRect = Rect(seg[1], tlY + rowStart, seg[2], rowEnd - rowStart)
-                    val src = Mat(pano, srcRect); val srcM = Mat(panoMask, srcRect)
-                    val dst = Mat(canvas, dstRect); val dstM = Mat(cmask, dstRect)
-                    src.copyTo(dst, srcM)
-                    srcM.copyTo(dstM, srcM)
-                    src.close(); srcM.close(); dst.close(); dstM.close(); srcRect.close(); dstRect.close()
+            val sensorFocal = PanoGeometry.focalPxX(meta.camera, imgW)
+            val sensorFocalY = PanoGeometry.focalPxY(meta.camera, imgH)
+            val sensorViews = buildSensorViews(kept, sensorFocal, sensorFocalY, imgW, imgH)
+
+            var method = StitchMethod.SENSORS
+            var views = sensorViews
+            if (mode == StitchMode.REFINE) {
+                val aligned = tryFeatureAlignment(images, kept, meta, sensorFocal)
+                if (aligned != null) {
+                    val rebased = rebaseOnSensorFrame(aligned, sensorViews)
+                    // Un recalage qui laisserait une partie de la pièce vide est moins bon qu'un
+                    // placement capteur : on compare les deux couvertures avant de composer.
+                    val featureCoverage = PanoGeometry.estimateCoverage(rebased, imgW, imgH)
+                    val sensorCoverage = PanoGeometry.estimateCoverage(sensorViews, imgW, imgH)
+                    if (featureCoverage >= sensorCoverage * MIN_RELATIVE_COVERAGE) {
+                        views = rebased
+                        method = StitchMethod.FEATURES
+                    } else {
+                        Log.w(TAG, "recalage écarté : couverture %.2f contre %.2f pour les capteurs"
+                            .format(featureCoverage, sensorCoverage))
+                    }
                 }
             }
 
-            // ---- 7. Remplissage des zones non couvertes ----
-            val buf = ByteArray(cw * ch * 3)
-            val mbuf = ByteArray(cw * ch)
-            canvas.data().get(buf)
-            cmask.data().get(mbuf)
-            EquirectFill.fill(buf, mbuf, cw, ch)
-            canvas.data().put(buf, 0, buf.size)
+            progress(StitchJobs.Stage.COMPOSE, 30)
+            val canvas = EquirectComposer(progress).compose(views, source, TARGET_WIDTH, 30, 85)
+            val coverage = canvas.coverage()
 
-            // ---- 8. Vue d'entrée : direction de la première photo ----
-            var defaultYaw = 0.0
-            val firstPos = compIdx.indexOf(0)
-            if (geometryTrusted && firstPos >= 0) {
-                val pt = warper.warpPoint(Point2f(composed[0] / 2f, composed[1] / 2f), kMats[firstPos], rMats[firstPos])
-                val col = EquirectGeometry.canvasCol(pt.x().roundToInt(), cw)
-                defaultYaw = EquirectGeometry.yawFromCol(col + 0.5, cw)
-                pt.close()
-            }
-
-            // ---- 9. Écriture ----
-            outEquirect.parentFile?.mkdirs()
-            if (!opencv_imgcodecs.imwrite(outEquirect.absolutePath, canvas, intArrayOf(opencv_imgcodecs.IMWRITE_JPEG_QUALITY, 88))) {
-                throw StitchException(StitchException.Kind.GENERIC, "écriture JPEG impossible")
-            }
-            val thumb = Mat()
-            opencv_imgproc.resize(canvas, thumb, Size(640, 320), 0.0, 0.0, opencv_imgproc.INTER_AREA)
-            opencv_imgcodecs.imwrite(outThumb.absolutePath, thumb, intArrayOf(opencv_imgcodecs.IMWRITE_JPEG_QUALITY, 85))
+            progress(StitchJobs.Stage.FINALIZE, 88)
+            EquirectFill.fill(canvas.bgr, canvas.mask, canvas.width, canvas.height)
+            write(canvas, outEquirect, outThumb)
             progress(StitchJobs.Stage.FINALIZE, 100)
 
-            closeAll(listOf(thumb, canvas, cmask, pano, panoMask, mask, umask, maskU, vec, stitcher, warper, cams) + kMats + rMats)
-            return StitchResult(cw, ch, defaultYaw, used, shots.size)
+            Log.i(TAG, "sphère assemblée : ${canvas.width}x${canvas.height} méthode=$method " +
+                "photos=${canvas.usedShots}/${shots.size} couverture=%.2f".format(coverage))
+            // Les photos sont conservées réduites : elles permettent de réassembler la sphère plus
+            // tard (affinage par recalage) sans occuper la place des originales pleine résolution.
+            compactSessionImages(sessionDir, images, kept)
+            return StitchResult(canvas.width, canvas.height, 0.0, canvas.usedShots, shots.size, method, coverage)
         } catch (e: OutOfMemoryError) {
-            throw StitchException(StitchException.Kind.MEMORY, "OOM")
+            throw StitchException(StitchException.Kind.MEMORY, "mémoire insuffisante")
         } catch (e: StitchException) {
             throw e
-        } catch (e: Throwable) {
-            val msg = e.message ?: e.javaClass.simpleName
-            if (msg.contains("Insufficient memory", true) || msg.contains("alloc", true)) throw StitchException(StitchException.Kind.MEMORY, msg)
+        } catch (t: Throwable) {
+            val msg = t.message ?: t.javaClass.simpleName
+            if (msg.contains("Insufficient memory", true) || msg.contains("bad_alloc", true)) {
+                throw StitchException(StitchException.Kind.MEMORY, msg)
+            }
             throw StitchException(StitchException.Kind.GENERIC, msg)
         } finally {
-            images.forEach { try { it.close() } catch (_: Throwable) {} }
+            for (m in images) try { m.close() } catch (_: Throwable) {}
         }
     }
 
-    private fun putFloat(p: org.bytedeco.javacpp.BytePointer, index: Int, v: Float) {
-        val bits = java.lang.Float.floatToIntBits(v)
-        val o = index.toLong() * 4
-        p.put(o, (bits and 0xFF).toByte())
-        p.put(o + 1, ((bits ushr 8) and 0xFF).toByte())
-        p.put(o + 2, ((bits ushr 16) and 0xFF).toByte())
-        p.put(o + 3, ((bits ushr 24) and 0xFF).toByte())
+    /** Recalage OpenCV, retenu seulement s'il conserve assez de photos et une focale plausible. */
+    private fun tryFeatureAlignment(
+        images: List<Mat>, shots: List<ShotMeta>, meta: CaptureSessionMeta, sensorFocal: Double
+    ): List<ShotView>? {
+        return try {
+            val alignment = FeatureAlignment(progress).align(images, shots, meta)
+            val ratio = alignment.views.size.toDouble() / images.size
+            val focal = alignment.views.map { it.focal }.sorted()[alignment.views.size / 2]
+            val focalDrift = abs(focal - sensorFocal) / max(focal, sensorFocal)
+            when {
+                ratio < MIN_KEPT_RATIO -> {
+                    Log.w(TAG, "recalage écarté : ${alignment.views.size}/${images.size} photos raccordées")
+                    null
+                }
+                focalDrift > 0.35 -> {
+                    Log.w(TAG, "recalage écarté : focale estimée %.0f px contre %.0f px attendue".format(focal, sensorFocal))
+                    null
+                }
+                else -> {
+                    Log.i(TAG, "recalage retenu : ${alignment.views.size}/${images.size} photos, focale %.0f px".format(focal))
+                    alignment.views
+                }
+            }
+        } catch (e: StitchException) {
+            Log.w(TAG, "recalage impossible (${e.kind}) : ${e.message} — recomposition depuis les capteurs")
+            null
+        } catch (t: Throwable) {
+            Log.w(TAG, "recalage planté : ${t.message} — recomposition depuis les capteurs")
+            null
+        }
     }
 
-    private fun closeAll(ps: List<Pointer>) {
-        for (p in ps) try { p.close() } catch (_: Throwable) {}
+    /**
+     * Ramène le recalage dans le repère des capteurs, puis complète avec les photos qu'il a
+     * écartées (murs unis, plafond).
+     *
+     * OpenCV construit son repère autour de la photo qu'il choisit comme référence et ne redresse
+     * l'horizon qu'en moyennant les orientations des caméras : la sphère peut en sortir inclinée
+     * et tournée. Le repère des capteurs, lui, tient sa verticale de la gravité et son azimut zéro
+     * de la première photo. On estime donc la rotation entre les deux repères sur les photos
+     * présentes des deux côtés, on l'applique au recalage, et les photos manquantes reprennent
+     * simplement leur orientation capteur.
+     */
+    private fun rebaseOnSensorFrame(featureViews: List<ShotView>, sensorViews: List<ShotView>): List<ShotView> {
+        val sensorByFile = sensorViews.associateBy { it.shot.file }
+        // A_feat = A_sens · Q  =>  Q = A_sensᵀ · A_feat  (repère recalage → repère capteurs)
+        val candidates = featureViews.mapNotNull { fv ->
+            val sv = sensorByFile[fv.shot.file] ?: return@mapNotNull null
+            PanoGeometry.multiply(PanoGeometry.transpose(sv.matrix), fv.matrix)
+        }
+        if (candidates.isEmpty()) return featureViews
+        val q = PanoGeometry.averageRotation(candidates)
+        val qT = PanoGeometry.transpose(q)
+        val rebased = featureViews.map { fv ->
+            ShotView(fv.shot, fv.imageIndex, PanoGeometry.multiply(fv.matrix, qT), fv.focal, fv.ppx, fv.ppy, fv.focalY)
+        }
+        val drift = rebased.mapNotNull { rv ->
+            sensorByFile[rv.shot.file]?.let { sv -> PanoGeometry.angleBetweenRotationsDeg(rv.matrix, sv.matrix) }
+        }
+        if (drift.isNotEmpty()) {
+            Log.i(TAG, "écart recalage/capteurs : médian %.1f° max %.1f°"
+                .format(drift.sorted()[drift.size / 2], drift.max()))
+        }
+        val placed = rebased.map { it.shot.file }.toSet()
+        val missing = sensorViews.filter { it.shot.file !in placed }
+        if (missing.isNotEmpty()) Log.i(TAG, "${missing.size} photo(s) placée(s) depuis les capteurs seuls")
+        return rebased + missing
+    }
+
+    private fun buildSensorViews(shots: List<ShotMeta>, focal: Double, focalY: Double, imgW: Int, imgH: Int): List<ShotView> {
+        val yaw0 = shots.first().yawDeg
+        return shots.mapIndexed { index, s ->
+            ShotView(s, index, PanoGeometry.refToCamera(PanoGeometry.deviceRotationOf(s), yaw0), focal,
+                imgW / 2.0, imgH / 2.0, focalY)
+        }
+    }
+
+    /** Réécrit les photos de la session à la résolution réellement utilisée par l'assemblage. */
+    private fun compactSessionImages(sessionDir: File, images: List<Mat>, shots: List<ShotMeta>) {
+        for (i in images.indices) {
+            val file = File(sessionDir, shots[i].file)
+            try {
+                if (!file.exists() || file.length() < 400_000L) continue
+                opencv_imgcodecs.imwrite(file.absolutePath, images[i], intArrayOf(opencv_imgcodecs.IMWRITE_JPEG_QUALITY, 88))
+            } catch (t: Throwable) {
+                Log.w(TAG, "compactage de ${shots[i].file} impossible : ${t.message}")
+            }
+        }
+    }
+
+    private fun write(canvas: ComposedCanvas, outEquirect: File, outThumb: File) {
+        outEquirect.parentFile?.mkdirs()
+        val mat = Mat(canvas.height, canvas.width, opencv_core.CV_8UC3)
+        try {
+            mat.data().put(canvas.bgr, 0, canvas.bgr.size)
+            if (!opencv_imgcodecs.imwrite(outEquirect.absolutePath, mat, intArrayOf(opencv_imgcodecs.IMWRITE_JPEG_QUALITY, 88))) {
+                throw StitchException(StitchException.Kind.GENERIC, "écriture JPEG impossible")
+            }
+            val thumb = Mat()
+            try {
+                opencv_imgproc.resize(mat, thumb, Size(640, 320), 0.0, 0.0, opencv_imgproc.INTER_AREA)
+                opencv_imgcodecs.imwrite(outThumb.absolutePath, thumb, intArrayOf(opencv_imgcodecs.IMWRITE_JPEG_QUALITY, 85))
+            } finally {
+                thumb.close()
+            }
+        } finally {
+            mat.close()
+        }
+    }
+
+    private fun load(dir: File, shot: ShotMeta, meta: CaptureSessionMeta): Mat? {
+        val m = opencv_imgcodecs.imread(File(dir, shot.file).absolutePath, opencv_imgcodecs.IMREAD_COLOR)
+        if (m == null || m.empty()) { m?.close(); return null }
+        var img = m
+        if (img.cols() > img.rows() && meta.camera.width < meta.camera.height) {
+            // L'orientation EXIF n'a pas été appliquée par le décodeur : on redresse nous-mêmes.
+            val rotated = Mat()
+            val code = if (meta.camera.jpegRotation == 270) opencv_core.ROTATE_90_COUNTERCLOCKWISE
+            else opencv_core.ROTATE_90_CLOCKWISE
+            opencv_core.rotate(img, rotated, code)
+            img.close(); img = rotated
+        }
+        val longSide = max(img.cols(), img.rows())
+        if (longSide > MAX_INPUT_SIDE) {
+            val s = MAX_INPUT_SIDE.toDouble() / longSide
+            val resized = Mat()
+            opencv_imgproc.resize(img, resized, Size((img.cols() * s).roundToInt(), (img.rows() * s).roundToInt()),
+                0.0, 0.0, opencv_imgproc.INTER_AREA)
+            img.close(); img = resized
+        }
+        return img
     }
 }
