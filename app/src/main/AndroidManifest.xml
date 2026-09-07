@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    android:versionCode="4"
-    android:versionName="2.2">
+    android:versionCode="5"
+    android:versionName="2.3">
 
     <uses-feature android:name="android.hardware.camera" android:required="true" />
     <uses-feature android:name="android.hardware.sensor.gyroscope" android:required="false" />
@@ -40,6 +40,11 @@
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Sphere360.Fullscreen" />
+
+        <activity
+            android:name=".gallery.RetouchActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="false" />
 
         <activity
             android:name=".viewer.ViewerActivity"

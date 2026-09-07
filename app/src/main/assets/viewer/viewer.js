@@ -1,6 +1,8 @@
 /*
  * Glue Photo Sphere Viewer ↔ application Android.
- *   Android → JS : window.app.load(data), updateNode(node), setMode(mode), getPosition(), goBack(), goToNode(id)
+ *   Android → JS : window.app.load(data), updateNode(node), setMode(mode), getPosition(), goBack(),
+ *                  goToNode(id), previewCorrection(pitch, roll), reanchorPortals(pitch, roll),
+ *                  commitCorrection(node)
  *   JS → Android : Android.onReady(), onViewerReady(), onNodeChanged(id), onSphereTapped(yaw, pitch),
  *                  onPortalTapped(portalId), onError(msg), log(msg)
  * Sans pont Android (tests navigateur), les événements sont aussi émis en CustomEvent "sphere360".
@@ -45,6 +47,14 @@
       '<span class="portal-chip-text">' + escapeHtml(label || '') + '</span></div>';
   }
 
+  /**
+   * Correction d'assiette : rotation du maillage de la sphère, appliquée par le GPU au rendu.
+   * Redresser un horizon penché ne demande donc aucun réassemblage de l'image.
+   */
+  function correctionOf(n) {
+    return { pan: 0, tilt: n.correctionPitch || 0, roll: n.correctionRoll || 0 };
+  }
+
   /** Nœud applicatif → nœud VirtualTourPlugin (liens = flèches 3D, marqueurs = libellés visibles). */
   function toPsvNode(n, ids) {
     var links = (n.links || []).filter(function (l) { return ids[l.nodeId]; });
@@ -53,6 +63,7 @@
       name: n.name || '',
       panorama: n.panorama,
       thumbnail: n.thumbnail,
+      sphereCorrection: correctionOf(n),
       data: { defaultYaw: n.defaultYaw || 0, defaultPitch: n.defaultPitch || 0 },
       links: links.map(function (l) {
         return { nodeId: l.nodeId, position: { yaw: l.yaw, pitch: l.pitch }, data: { portalId: l.portalId, label: l.label } };
@@ -95,6 +106,7 @@
       navbar: false,
       defaultYaw: start.defaultYaw || 0,
       defaultPitch: start.defaultPitch || 0,
+      sphereCorrection: correctionOf(start),
       defaultZoomLvl: 25,
       minFov: 30,
       maxFov: 100,
@@ -163,7 +175,67 @@
       state.nodes[n.id] = n;
       var ids = {}; Object.keys(state.nodes).forEach(function (k) { ids[k] = true; });
       var psv = toPsvNode(n, ids);
+      // Volontairement sans sphereCorrection : le plugin recharge le panorama dès qu'on la lui
+      // passe, ce qui ferait clignoter la sphère à chaque portail ajouté.
       state.tour.updateNode({ id: psv.id, name: psv.name, links: psv.links, markers: psv.markers });
+    },
+
+    /** Aperçu immédiat d'une correction d'assiette, sans recharger ni rien enregistrer. */
+    previewCorrection: function (pitch, roll) {
+      if (!state.viewer) return;
+      try {
+        state.viewer.setOption('sphereCorrection', { pan: 0, tilt: pitch || 0, roll: roll || 0 });
+      } catch (e) { console.error('sphereCorrection', e); }
+    },
+
+    /**
+     * Recalcule la position des portails du nœud courant pour une nouvelle correction d'assiette,
+     * et applique cette correction à l'affichage.
+     *
+     * Photo Sphere Viewer place les marqueurs dans le repère du monde, alors que la correction fait
+     * tourner le maillage de la sphère : redresser l'horizon décale donc l'image sous les portails,
+     * qui ne pointent plus la porte qu'ils désignaient. On les rattache à ce qui compte vraiment,
+     * un point de l'image, en passant par les coordonnées de texture avant puis après le
+     * changement. Le calcul est fait par le viewer lui-même, ce qui évite de redériver sa
+     * convention d'angles d'Euler.
+     */
+    reanchorPortals: function (pitch, roll) {
+      if (!state.viewer) return '[]';
+      var appNode = state.nodes[state.currentId];
+      var links = (appNode && appNode.links) || [];
+      var helper = state.viewer.dataHelper;
+      var anchors = [];
+      links.forEach(function (l) {
+        try {
+          var t = helper.sphericalCoordsToTextureCoords({ yaw: l.yaw, pitch: l.pitch });
+          // L'adaptateur renvoie des coordonnées indéfinies pour un point hors de l'image
+          // recadrée : dans ce cas il n'y a pas de pixel auquel rattacher le portail.
+          if (t.textureX === undefined || t.textureY === undefined) return;
+          anchors.push({ portalId: l.portalId, textureX: t.textureX, textureY: t.textureY });
+        } catch (e) { /* pas de données de texture : le portail reste où il est */ }
+      });
+      window.app.previewCorrection(pitch, roll);
+      var out = [];
+      anchors.forEach(function (a) {
+        try {
+          var p = helper.textureCoordsToSphericalCoords({ textureX: a.textureX, textureY: a.textureY });
+          out.push({ portalId: a.portalId, yaw: p.yaw, pitch: p.pitch });
+        } catch (e) { /* ignore */ }
+      });
+      return JSON.stringify(out);
+    },
+
+    /** Enregistre la correction dans le nœud : le plugin recharge le panorama redressé. */
+    commitCorrection: function (n) {
+      if (typeof n === 'string') n = JSON.parse(n);
+      if (!state.tour) return;
+      state.nodes[n.id] = n;
+      var ids = {}; Object.keys(state.nodes).forEach(function (k) { ids[k] = true; });
+      var psv = toPsvNode(n, ids);
+      state.tour.updateNode({
+        id: psv.id, name: psv.name, links: psv.links, markers: psv.markers,
+        sphereCorrection: psv.sphereCorrection
+      });
     },
     setMode: function (mode) { state.mode = mode; applyMode(); },
     getPosition: function () {

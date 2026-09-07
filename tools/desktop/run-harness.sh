@@ -22,7 +22,7 @@ if [ ! -d "$NAT" ]; then
 fi
 
 J="$ROOT/app/src/main/java/care/primary/sphere360"
-SRC="$J/stitch/SphereStitcher.kt $J/stitch/OpenCvRuntime.kt $J/stitch/PanoGeometry.kt $J/stitch/ShotView.kt $J/stitch/EquirectComposer.kt $J/stitch/FeatureAlignment.kt $J/stitch/EquirectFill.kt $J/stitch/StitchJobs.kt $J/capture/CaptureGrid.kt $J/capture/SphereMath.kt $J/data/Models.kt $J/util/Bg.kt $ROOT/tools/desktop/StitchHarness.kt $ROOT/tools/desktop/Natives.kt $ROOT/tools/desktop/StitchDiag.kt"
+SRC="$J/stitch/SphereStitcher.kt $J/stitch/OpenCvRuntime.kt $J/stitch/PanoGeometry.kt $J/stitch/ShotView.kt $J/stitch/LensDistortion.kt $J/stitch/StitchOptions.kt $J/stitch/EquirectComposer.kt $J/stitch/FeatureAlignment.kt $J/stitch/EquirectFill.kt $J/stitch/StitchJobs.kt $J/capture/CaptureGrid.kt $J/capture/SphereMath.kt $J/data/Models.kt $J/util/Bg.kt $ROOT/tools/desktop/StitchHarness.kt $ROOT/tools/desktop/Natives.kt $ROOT/tools/desktop/StitchDiag.kt"
 
 if [ ! -d "$OUT/classes" ] || [ -n "$(find $SRC $ROOT/tools/desktop/stub -newer "$OUT/classes" 2>/dev/null)" ]; then
   echo "== compilation =="

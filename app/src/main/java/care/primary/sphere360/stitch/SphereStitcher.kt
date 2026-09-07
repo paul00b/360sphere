@@ -60,7 +60,14 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         /** Largeur de l'équirectangulaire : compromis entre détail et mémoire GPU des WebView mobiles. */
         const val TARGET_WIDTH = 4096
 
-        /** Côté long des photos utilisées pour le calcul (le recalage n'a pas besoin de la pleine résolution). */
+        /**
+         * Côté long des photos utilisées pour le calcul.
+         *
+         * Le recalage n'a pas besoin de la pleine résolution, et la projection n'en a besoin que
+         * proportionnellement à la largeur du canevas : une photo portrait de 1280 px de haut
+         * couvrant 50° de champ vertical vaut environ 9200 px de haut à l'échelle de la sphère,
+         * donc largement de quoi remplir un équirectangulaire de 8192 de large.
+         */
         private const val MAX_INPUT_SIDE = 1280
 
         /**
@@ -82,13 +89,17 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         meta: CaptureSessionMeta,
         outEquirect: File,
         outThumb: File,
-        mode: StitchMode
+        options: StitchOptions
     ): StitchResult {
         OpenCvRuntime.ensureLoaded()
         progress(StitchJobs.Stage.LOADING, 1)
 
-        val shots = meta.shots.filter { File(sessionDir, it.file).exists() }
+        val mode = options.mode
+        val shots = meta.shots
+            .filter { File(sessionDir, it.file).exists() }
+            .filter { it.file !in options.excluded }
         if (shots.size < 2) throw StitchException(StitchException.Kind.NEED_MORE, "moins de 2 photos")
+        if (options.excluded.isNotEmpty()) Log.i(TAG, "${options.excluded.size} photo(s) écartée(s) à la demande")
 
         val images = ArrayList<Mat>()
         val kept = ArrayList<ShotMeta>()
@@ -115,12 +126,21 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
 
             val sensorFocal = PanoGeometry.focalPxX(meta.camera, imgW)
             val sensorFocalY = PanoGeometry.focalPxY(meta.camera, imgH)
-            val sensorViews = buildSensorViews(kept, sensorFocal, sensorFocalY, imgW, imgH)
+            // Modèle d'objectif de la session : rectilinéaire pour un module principal ou quand le
+            // téléphone corrige lui-même, Brown-Conrady pour un grand angle qu'il documente sans
+            // corriger. Il ne dépend pas de la résolution : les coefficients portent sur des pentes
+            // de rayon, pas sur des pixels.
+            val lens = PanoGeometry.distortionOf(meta.camera)
+            if (!lens.identity) {
+                Log.i(TAG, "distorsion de l'objectif appliquée : k1=%.4f k2=%.4f k3=%.4f p1=%.5f p2=%.5f"
+                    .format(lens.k1, lens.k2, lens.k3, lens.p1, lens.p2))
+            }
+            val sensorViews = buildSensorViews(kept, sensorFocal, sensorFocalY, imgW, imgH, lens)
 
             var method = StitchMethod.SENSORS
             var views = sensorViews
             if (mode == StitchMode.REFINE) {
-                val aligned = tryFeatureAlignment(images, kept, meta, sensorFocal)
+                val aligned = tryFeatureAlignment(images, kept, meta, sensorFocal, lens)
                 if (aligned != null) {
                     val rebased = rebaseOnSensorFrame(aligned, sensorViews)
                     // Un recalage qui laisserait une partie de la pièce vide est moins bon qu'un
@@ -138,7 +158,8 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
             }
 
             progress(StitchJobs.Stage.COMPOSE, 30)
-            val canvas = EquirectComposer(progress).compose(views, source, TARGET_WIDTH, 30, 85)
+            val canvas = EquirectComposer(progress, options.blend)
+                .compose(views, source, options.targetWidth, 30, 85)
             val coverage = canvas.coverage()
 
             progress(StitchJobs.Stage.FINALIZE, 88)
@@ -147,9 +168,9 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
             progress(StitchJobs.Stage.FINALIZE, 100)
 
             Log.i(TAG, "sphère assemblée : ${canvas.width}x${canvas.height} méthode=$method " +
-                "photos=${canvas.usedShots}/${shots.size} couverture=%.2f".format(coverage))
+                "photos=${canvas.usedShots}/${shots.size} mélange=${options.blend} couverture=%.2f".format(coverage))
             // Les photos sont conservées réduites : elles permettent de réassembler la sphère plus
-            // tard (affinage par recalage) sans occuper la place des originales pleine résolution.
+            // tard (retouche, recalage) sans occuper la place des originales pleine résolution.
             compactSessionImages(sessionDir, images, kept)
             return StitchResult(canvas.width, canvas.height, 0.0, canvas.usedShots, shots.size, method, coverage)
         } catch (e: OutOfMemoryError) {
@@ -169,10 +190,11 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
 
     /** Recalage OpenCV, retenu seulement s'il conserve assez de photos et une focale plausible. */
     private fun tryFeatureAlignment(
-        images: List<Mat>, shots: List<ShotMeta>, meta: CaptureSessionMeta, sensorFocal: Double
+        images: List<Mat>, shots: List<ShotMeta>, meta: CaptureSessionMeta, sensorFocal: Double,
+        lens: LensDistortion
     ): List<ShotView>? {
         return try {
-            val alignment = FeatureAlignment(progress).align(images, shots, meta)
+            val alignment = FeatureAlignment(progress).align(images, shots, meta, lens)
             val ratio = alignment.views.size.toDouble() / images.size
             val focal = alignment.views.map { it.focal }.sorted()[alignment.views.size / 2]
             val focalDrift = abs(focal - sensorFocal) / max(focal, sensorFocal)
@@ -220,9 +242,7 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         if (candidates.isEmpty()) return featureViews
         val q = PanoGeometry.averageRotation(candidates)
         val qT = PanoGeometry.transpose(q)
-        val rebased = featureViews.map { fv ->
-            ShotView(fv.shot, fv.imageIndex, PanoGeometry.multiply(fv.matrix, qT), fv.focal, fv.ppx, fv.ppy, fv.focalY)
-        }
+        val rebased = featureViews.map { fv -> fv.withMatrix(PanoGeometry.multiply(fv.matrix, qT)) }
         val drift = rebased.mapNotNull { rv ->
             sensorByFile[rv.shot.file]?.let { sv -> PanoGeometry.angleBetweenRotationsDeg(rv.matrix, sv.matrix) }
         }
@@ -236,11 +256,12 @@ class SphereStitcher(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         return rebased + missing
     }
 
-    private fun buildSensorViews(shots: List<ShotMeta>, focal: Double, focalY: Double, imgW: Int, imgH: Int): List<ShotView> {
+    private fun buildSensorViews(shots: List<ShotMeta>, focal: Double, focalY: Double, imgW: Int, imgH: Int,
+                                 lens: LensDistortion): List<ShotView> {
         val yaw0 = shots.first().yawDeg
         return shots.mapIndexed { index, s ->
             ShotView(s, index, PanoGeometry.refToCamera(PanoGeometry.deviceRotationOf(s), yaw0), focal,
-                imgW / 2.0, imgH / 2.0, focalY)
+                imgW / 2.0, imgH / 2.0, focalY, lens)
         }
     }
 

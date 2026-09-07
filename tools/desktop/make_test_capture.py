@@ -18,9 +18,9 @@ from PIL import Image, ImageFilter
 
 def build_grid(hfov, vfov, overlap=0.40):
     """Réplique care.primary.sphere360.capture.CaptureGrid.build."""
-    hf = min(max(hfov, 30.0), 100.0)
-    vf = min(max(vfov, 35.0), 110.0)
-    e1 = min(max(vf * 0.70, 30.0), 55.0)
+    hf = min(max(hfov, 25.0), 140.0)
+    vf = min(max(vfov, 25.0), 140.0)
+    e1 = min(max(min(vf * 0.70, 90.0 - vf * 0.40), 30.0), 62.0)
     rows = [0.0, e1, -e1]
     targets = []
     for ri, pitch in enumerate(rows):
@@ -59,7 +59,49 @@ def device_rotation(yaw_deg, pitch_deg, roll_deg):
     return [float(v) for v in m.reshape(-1)]
 
 
-def render_view(pano, yaw_deg, pitch_deg, roll_deg, hfov, vfov, w, h, translate=None):
+def radial_map(r, k):
+    """Rayon observé pour un rayon idéal : r (1 + k1 r² + k2 r⁴ + k3 r⁶). k en ordre OpenCV."""
+    r2 = r * r
+    return r * (1 + r2 * (k[0] + r2 * (k[1] + r2 * k[4])))
+
+
+def undistort(xd, yd, k, steps=5, bisections=50):
+    """
+    Pentes de rayon observées -> pentes idéales, vectorisé.
+
+    Même méthode que care.primary.sphere360.stitch.LensDistortion : inversion radiale exacte par
+    bissection (la fonction est croissante sur le domaine d'un objectif photo), puis quelques
+    passes pour les deux termes tangentiels, traités comme une petite perturbation.
+    """
+    ux, uy = np.array(xd, dtype=np.float64), np.array(yd, dtype=np.float64)
+    x = np.zeros_like(ux)
+    y = np.zeros_like(uy)
+    for step in range(steps):
+        ru = np.hypot(ux, uy)
+        hi = np.maximum(ru, 1e-9)
+        for _ in range(60):
+            need = radial_map(hi, k) < ru
+            if not need.any():
+                break
+            hi = np.where(need, hi * 1.5, hi)
+        lo = np.zeros_like(hi)
+        for _ in range(bisections):
+            mid = 0.5 * (lo + hi)
+            less = radial_map(mid, k) < ru
+            lo = np.where(less, mid, lo)
+            hi = np.where(less, hi, mid)
+        r = 0.5 * (lo + hi)
+        scale = np.where(ru > 1e-15, r / np.maximum(ru, 1e-15), 1.0)
+        x = ux * scale
+        y = uy * scale
+        if step + 1 < steps:
+            r2 = x * x + y * y
+            ux = xd - (2 * k[2] * x * y + k[3] * (r2 + 2 * x * x))
+            uy = yd - (k[2] * (r2 + 2 * y * y) + 2 * k[3] * x * y)
+    return x, y
+
+
+def render_view(pano, yaw_deg, pitch_deg, roll_deg, hfov, vfov, w, h, translate=None, distortion=None):
     """Rend une vue perspective. translate = déplacement de la caméra en unités de rayon de pièce."""
     f, right, up = camera_axes(yaw_deg, pitch_deg, roll_deg)
     down = -up
@@ -69,6 +111,11 @@ def render_view(pano, yaw_deg, pitch_deg, roll_deg, hfov, vfov, w, h, translate=
     xs = (np.arange(w) + 0.5) / w * 2 - 1
     ys = (np.arange(h) + 0.5) / h * 2 - 1
     X, Y = np.meshgrid(xs * tx, ys * ty)
+    if distortion is not None:
+        # (X, Y) est la position observée du point dans l'image ; le rayon correspondant part de la
+        # position idéale. On inverse donc la distorsion pour savoir quelle direction du monde
+        # tombe sur ce pixel : l'image produite est bien celle d'un objectif distordu.
+        X, Y = undistort(X, Y, distortion)
     d = f[None, None, :] + X[..., None] * right[None, None, :] + Y[..., None] * down[None, None, :]
 
     if translate is not None:
@@ -111,6 +158,11 @@ def main():
     ap.add_argument("--blur", type=float, default=0.0, help="flou gaussien (rayon px)")
     ap.add_argument("--quality", type=int, default=93)
     ap.add_argument("--limit", type=int, default=0, help="ne rendre que les N premières positions")
+    ap.add_argument("--distortion", default="",
+                    help="coefficients de Brown-Conrady k1,k2,p1,p2,k3 (ordre OpenCV) appliqués au rendu")
+    ap.add_argument("--hide-distortion", action="store_true",
+                    help="rend les photos distordues mais n'écrit pas le modèle dans meta.json : "
+                         "sert à mesurer ce que coûte une projection rectilinéaire sur un grand angle")
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args()
 
@@ -118,6 +170,11 @@ def main():
     if a.vfov <= 0:
         f = (a.width / 2) / math.tan(math.radians(a.hfov) / 2)
         a.vfov = math.degrees(2 * math.atan((a.height / 2) / f))
+    dist = None
+    if a.distortion:
+        dist = [float(v) for v in a.distortion.split(",")]
+        if len(dist) != 5:
+            raise SystemExit("--distortion attend 5 coefficients k1,k2,p1,p2,k3")
     pano = np.asarray(Image.open(a.pano).convert("RGB")).astype(np.float32)
     targets = build_grid(a.hfov, a.vfov)
     if a.limit:
@@ -135,7 +192,7 @@ def main():
         tr = None
         if a.translate > 0:
             tr = rng.normal(0, a.translate, 3); tr[2] *= 0.3
-        img = render_view(pano, yaw, pitch, roll, a.hfov, a.vfov, a.width, a.height, tr)
+        img = render_view(pano, yaw, pitch, roll, a.hfov, a.vfov, a.width, a.height, tr, dist)
         if a.exposure > 0:
             img = img * (1 + rng.normal(0, a.exposure))
         if a.noise > 0:
@@ -148,14 +205,18 @@ def main():
         shots.append({"file": name, "yaw": yaw, "pitch": pitch, "roll": roll, "target": t["index"],
                       "rot": device_rotation(yaw, pitch, roll)})
 
+    camera = {"hfov": a.hfov, "vfov": a.vfov, "width": a.width, "height": a.height, "jpegRotation": 90}
+    if dist is not None and not a.hide_distortion:
+        camera["distortion"] = dist
     meta = {
         "id": os.path.basename(a.out.rstrip("/")), "createdAt": 0, "name": "Test",
-        "camera": {"hfov": a.hfov, "vfov": a.vfov, "width": a.width, "height": a.height, "jpegRotation": 90},
+        "camera": camera,
         "shots": shots, "state": "CAPTURED", "error": None, "attempts": 0, "targetCount": len(targets),
     }
     with open(os.path.join(a.out, "meta.json"), "w") as fh:
         json.dump(meta, fh, indent=1)
-    print(f"{len(shots)} photos {a.width}x{a.height} hfov={a.hfov:.2f} vfov={a.vfov:.2f} -> {a.out}")
+    label = "rectilinéaire" if dist is None else ("distordu, modèle caché" if a.hide_distortion else "distordu")
+    print(f"{len(shots)} photos {a.width}x{a.height} hfov={a.hfov:.2f} vfov={a.vfov:.2f} {label} -> {a.out}")
 
 
 if __name__ == "__main__":

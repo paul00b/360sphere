@@ -17,11 +17,13 @@ class TourStore(context: Context) {
     val spheresDir = File(root, "spheres").apply { mkdirs() }
     val sessionsDir = File(root, "sessions").apply { mkdirs() }
     private val indexFile = File(root, "spheres.json")
+    private val foldersFile = File(root, "folders.json")
 
     private val spheres = LinkedHashMap<String, Sphere>()
+    private val folders = LinkedHashMap<String, Folder>()
     private val listeners = CopyOnWriteArraySet<() -> Unit>()
 
-    init { load() }
+    init { load(); loadFolders() }
 
     fun addListener(l: () -> Unit) { listeners.add(l) }
     fun removeListener(l: () -> Unit) { listeners.remove(l) }
@@ -30,6 +32,13 @@ class TourStore(context: Context) {
     // ---- Sphères ----
 
     @Synchronized fun all(): List<Sphere> = spheres.values.sortedByDescending { it.createdAt }
+
+    /** Sphères d'un dossier, la chaîne vide désignant la racine. */
+    @Synchronized fun spheresIn(folderId: String): List<Sphere> =
+        spheres.values.filter { it.folderId == folderId }.sortedByDescending { it.createdAt }
+
+    @Synchronized fun countIn(folderId: String): Int = spheres.values.count { it.folderId == folderId }
+
     @Synchronized fun get(id: String): Sphere? = spheres[id]
     @Synchronized fun count(): Int = spheres.size
 
@@ -41,11 +50,73 @@ class TourStore(context: Context) {
      * réassemblage, et tous les portails qui pointaient vers elle.
      */
     @Synchronized fun delete(id: String) {
-        val removed = spheres.remove(id) ?: return
+        if (!deleteInternal(id)) return
+        save(); notifyChanged()
+    }
+
+    private fun deleteInternal(id: String): Boolean {
+        val removed = spheres.remove(id) ?: return false
         spheres.values.forEach { s -> s.portals.removeAll { it.toSphereId == id } }
         sphereDir(id).deleteRecursively()
         if (removed.sessionId.isNotEmpty()) sessionDir(removed.sessionId).deleteRecursively()
+        return true
+    }
+
+    /**
+     * Déplace une sphère vers un autre dossier.
+     *
+     * Les portails ne relient que des sphères d'un même dossier : ceux qui partent de la sphère
+     * et ceux qui y mènent depuis son ancien dossier deviendraient des liens fantômes, menant à
+     * une sphère absente de la visite. Ils sont donc supprimés avec le déplacement. C'est la
+     * contrepartie assumée d'une visite fermée sur son dossier, et l'utilisateur en est averti
+     * avant de valider.
+     */
+    @Synchronized fun moveSphere(id: String, folderId: String) {
+        val sphere = spheres[id] ?: return
+        if (sphere.folderId == folderId) return
+        sphere.folderId = folderId
+        sphere.portals.clear()
+        spheres.values.forEach { other -> other.portals.removeAll { it.toSphereId == id } }
         save(); notifyChanged()
+    }
+
+    /** Nombre de portails qu'un déplacement de cette sphère supprimerait. */
+    @Synchronized fun portalsAffectedByMove(id: String): Int {
+        val sphere = spheres[id] ?: return 0
+        return sphere.portals.size + spheres.values.sumOf { other -> other.portals.count { it.toSphereId == id } }
+    }
+
+    // ---- Dossiers (visites) ----
+
+    @Synchronized fun folders(): List<Folder> = folders.values.sortedByDescending { it.createdAt }
+    @Synchronized fun folder(id: String): Folder? = folders[id]
+
+    @Synchronized fun createFolder(name: String): Folder {
+        val f = Folder(newId(), name, System.currentTimeMillis())
+        folders[f.id] = f
+        saveFolders(); notifyChanged()
+        return f
+    }
+
+    @Synchronized fun renameFolder(id: String, name: String) {
+        val f = folders[id] ?: return
+        f.name = name
+        saveFolders(); notifyChanged()
+    }
+
+    /** Supprime le dossier et tout ce qu'il contient : sphères, fichiers, sessions conservées. */
+    @Synchronized fun deleteFolder(id: String) {
+        if (folders.remove(id) == null) return
+        for (s in spheres.values.filter { it.folderId == id }.map { it.id }) deleteInternal(s)
+        for (session in listSessions().filter { it.folderId == id }) deleteSession(session.id)
+        saveFolders(); save(); notifyChanged()
+    }
+
+    @Synchronized fun nextFolderName(template: (Int) -> String): String {
+        var n = folders.size + 1
+        val names = folders.values.map { it.name }.toSet()
+        while (names.contains(template(n))) n++
+        return template(n)
     }
 
     fun sphereDir(id: String): File = File(spheresDir, id)
@@ -122,6 +193,33 @@ class TourStore(context: Context) {
         val arr = JSONArray()
         spheres.values.forEach { arr.put(it.toJson()) }
         writeAtomic(indexFile, arr.toString())
+    }
+
+    private fun loadFolders() {
+        if (!foldersFile.exists()) return
+        try {
+            val arr = JSONArray(foldersFile.readText())
+            for (i in 0 until arr.length()) {
+                val f = Folder.fromJson(arr.getJSONObject(i))
+                folders[f.id] = f
+            }
+        } catch (e: Exception) {
+            folders.clear()
+        }
+        // Un dossier disparu (index réécrit, fichier corrompu) laisserait ses sphères invisibles :
+        // elles reviennent à la racine plutôt que d'être perdues.
+        val known = folders.keys
+        var repaired = false
+        for (s in spheres.values) {
+            if (s.folderId.isNotEmpty() && s.folderId !in known) { s.folderId = ""; repaired = true }
+        }
+        if (repaired) save()
+    }
+
+    private fun saveFolders() {
+        val arr = JSONArray()
+        folders.values.forEach { arr.put(it.toJson()) }
+        writeAtomic(foldersFile, arr.toString())
     }
 
     private fun writeAtomic(file: File, content: String) {

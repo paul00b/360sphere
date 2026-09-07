@@ -57,6 +57,7 @@
             android:tint="@color/primary" />
 
         <TextView
+            android:id="@+id/empty_title"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="20dp"
@@ -65,6 +66,7 @@
             android:textAppearance="@style/Text.Title" />
 
         <TextView
+            android:id="@+id/empty_body"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"

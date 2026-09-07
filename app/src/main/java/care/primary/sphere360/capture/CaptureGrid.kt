@@ -20,8 +20,12 @@ class CapturePlan(val targets: List<CaptureTarget>, val rowPitches: List<Double>
 /**
  * Grille de capture façon Photo Sphere : une rangée à l'horizon et deux rangées inclinées
  * (haut/bas), avec un pas en azimut calculé depuis le champ de vue pour garantir ~40 % de
- * recouvrement horizontal. Les pôles (zénith/nadir) ne sont pas capturés : ils sont
- * complétés par extrapolation à l'assemblage (limitation documentée).
+ * recouvrement horizontal.
+ *
+ * Le nombre de positions suit le champ de vue de l'objectif : une trentaine avec un module
+ * principal (66° en paysage, donc 50° en portrait), une quinzaine avec un ultra grand angle. Un
+ * grand angle change aussi la nature du résultat : les rangées inclinées atteignent réellement le
+ * zénith et le nadir, là qu'un objectif standard laisse deux calottes à extrapoler.
  */
 object CaptureGrid {
     const val DEFAULT_OVERLAP = 0.40
@@ -29,10 +33,16 @@ object CaptureGrid {
     /** Fraction du champ de vue diagonal en dessous de laquelle deux prises se recouvrent utilement. */
     const val OVERLAP_ANGLE_FACTOR = 0.80
 
+    /** Bornes du champ de vue acceptées : du téléobjectif à l'ultra grand angle. */
+    const val MIN_HFOV = 25.0
+    const val MAX_HFOV = 140.0
+    const val MIN_VFOV = 25.0
+    const val MAX_VFOV = 140.0
+
     fun build(hfovDeg: Double, vfovDeg: Double, overlap: Double = DEFAULT_OVERLAP): CapturePlan {
-        val hf = hfovDeg.coerceIn(30.0, 100.0)
-        val vf = vfovDeg.coerceIn(35.0, 110.0)
-        val e1 = (vf * 0.70).coerceIn(30.0, 55.0)
+        val hf = hfovDeg.coerceIn(MIN_HFOV, MAX_HFOV)
+        val vf = vfovDeg.coerceIn(MIN_VFOV, MAX_VFOV)
+        val e1 = rowPitch(vf)
         val rows = listOf(0.0, e1, -e1)
         val targets = ArrayList<CaptureTarget>()
         rows.forEachIndexed { ri, pitch ->
@@ -67,6 +77,18 @@ object CaptureGrid {
         val b = SphereMath.dirFromYawPitch(yaw2 * SphereMath.DEG, pitch2 * SphereMath.DEG)
         return SphereMath.angleBetween(a, b) * SphereMath.RAD
     }
+
+    /**
+     * Inclinaison des deux rangées extrêmes, en degrés.
+     *
+     * Deux exigences se croisent. La rangée doit rester assez proche de l'horizon pour la
+     * recouvrir largement, d'où le premier terme, proportionnel au champ vertical. Mais elle doit
+     * aussi porter jusqu'au pôle, ce qui demande une inclinaison d'au moins 90° moins la moitié du
+     * champ : le second terme borne donc l'inclinaison de façon à ce qu'un objectif suffisamment
+     * large ferme complètement la sphère, au lieu de laisser une calotte à extrapoler.
+     */
+    fun rowPitch(vfovDeg: Double): Double =
+        kotlin.math.min(vfovDeg * 0.70, 90.0 - vfovDeg * 0.40).coerceIn(30.0, 62.0)
 
     /** Champ de vue diagonal d'un objectif rectilinéaire, en degrés. */
     fun diagonalFovDeg(hfovDeg: Double, vfovDeg: Double): Double {

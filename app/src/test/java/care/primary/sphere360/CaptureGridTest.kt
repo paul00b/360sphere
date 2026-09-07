@@ -66,6 +66,46 @@ class CaptureGridTest {
     }
 
     @Test
+    fun ultraWideNeedsFarFewerShotsAndClosesThePoles() {
+        // Module ultra grand angle : 100° en paysage, donc 80° en portrait sur du 4:3.
+        val wide = CaptureGrid.build(80.0, 100.0)
+        val standard = CaptureGrid.build(50.0, 66.0)
+        // 18 positions contre 30 : la capture est nettement plus courte, donc moins exposée à ce
+        // que l'utilisateur se déplace en route.
+        assertTrue("grand angle ${wide.size} contre standard ${standard.size}",
+            wide.size <= standard.size * 2 / 3)
+        assertEquals(3, wide.rowPitches.size)
+        // Les rangées inclinées doivent porter au-delà du pôle : plus de calotte à extrapoler.
+        assertTrue("portée verticale ${wide.rowPitches.max()!! + 100.0 / 2}",
+            wide.rowPitches.max()!! + 100.0 / 2 >= 90.0)
+        // Le graphe d'appariement garde ses cycles, condition de convergence du recalage.
+        val degrees = wide.targets.map { t ->
+            wide.targets.count { o ->
+                o.index != t.index && CaptureGrid.overlaps(t.yawDeg, t.pitchDeg, o.yawDeg, o.pitchDeg, 80.0, 100.0)
+            }
+        }
+        assertTrue("degré minimum ${degrees.min()}", degrees.min()!! >= 3)
+    }
+
+    @Test
+    fun rowPitchStaysUsableAcrossTheWholeLensRange() {
+        // Un objectif standard reste sous la barre des 90° : la calotte polaire est extrapolée.
+        assertTrue(CaptureGrid.rowPitch(66.0) + 33.0 < 90.0)
+        // À partir d'un champ vertical d'environ 85°, la sphère se ferme complètement.
+        for (vfov in 85..130 step 5) {
+            val pitch = CaptureGrid.rowPitch(vfov.toDouble())
+            assertTrue("vfov $vfov : $pitch", pitch + vfov / 2.0 >= 90.0)
+            // et la rangée reste assez près de l'horizon pour la recouvrir
+            assertTrue("vfov $vfov recouvrement", pitch < vfov * 0.75)
+        }
+        // Bornes : jamais de rangée absurde, quel que soit ce que rapporte le pilote.
+        assertTrue(CaptureGrid.rowPitch(10.0) >= 30.0)
+        assertTrue(CaptureGrid.rowPitch(200.0) >= 30.0)
+        assertTrue(CaptureGrid.build(1.0, 1.0).size > 0)
+        assertTrue(CaptureGrid.build(400.0, 400.0).size > 0)
+    }
+
+    @Test
     fun axisAngleIsSymmetricAndBounded() {
         assertEquals(0.0, CaptureGrid.axisAngleDeg(12.0, 34.0, 12.0, 34.0), 1e-9)
         assertEquals(90.0, CaptureGrid.axisAngleDeg(0.0, 0.0, 90.0, 0.0), 1e-9)

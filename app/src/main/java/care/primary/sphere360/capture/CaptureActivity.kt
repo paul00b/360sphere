@@ -22,14 +22,17 @@ import care.primary.sphere360.data.CaptureSessionMeta
 import care.primary.sphere360.data.SessionState
 import care.primary.sphere360.data.ShotMeta
 import care.primary.sphere360.data.TourStore
+import care.primary.sphere360.stitch.LensDistortion
 import care.primary.sphere360.stitch.StitchMode
 import care.primary.sphere360.stitch.StitchService
 import care.primary.sphere360.util.Bg
 import care.primary.sphere360.util.Haptics
+import care.primary.sphere360.util.Prefs
 import care.primary.sphere360.util.dpi
 import care.primary.sphere360.util.onSystemInsets
 import care.primary.sphere360.util.toast
 import java.io.File
+import kotlin.math.roundToInt
 
 /**
  * Capture guidée façon Photo Sphere : l'utilisateur pivote sur place, amène le réticule sur
@@ -48,6 +51,9 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         private const val MIN_INTERVAL_MS = 450L
         private const val WATCHDOG_MS = 3500L
         private const val REQ_CAMERA = 11
+
+        /** Dossier (visite) dans lequel la sphère assemblée doit atterrir. */
+        const val EXTRA_FOLDER = "folder"
     }
 
     private lateinit var store: TourStore
@@ -61,9 +67,13 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
     private lateinit var hint: TextView
     private lateinit var intro: View
     private lateinit var btnStart: Button
+    private lateinit var btnLens: Button
+    private lateinit var lensNote: TextView
 
     private lateinit var camera: CameraController
     private var cameraInfo: CameraController.CameraInfo? = null
+    private var lenses: List<CameraController.CameraInfo> = emptyList()
+    private lateinit var prefs: Prefs
     private lateinit var tracker: OrientationTracker
 
     private var plan: CapturePlan? = null
@@ -82,6 +92,10 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
     private var watchdog: Runnable? = null
 
     private var session: CaptureSessionMeta? = null
+    private var sessionId = ""
+    private var sessionCreatedAt = 0L
+    private var sessionName = ""
+    private var folderId = ""
     private lateinit var haptics: Haptics
     private var topInset = 0
     private var bottomInset = 0
@@ -104,6 +118,8 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         hint = findViewById(R.id.hint)
         intro = findViewById(R.id.intro)
         btnStart = findViewById(R.id.btn_start)
+        btnLens = findViewById(R.id.btn_lens)
+        lensNote = findViewById(R.id.lens_note)
 
         haptics = Haptics(this)
         tracker = OrientationTracker(this) { onOrientation() }
@@ -113,29 +129,21 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
             return
         }
 
+        prefs = Prefs(this)
         camera = CameraController(this, this)
-        val info = camera.selectCamera()
+        lenses = camera.availableLenses()
+        val info = camera.selectCamera(prefs.lensId.takeIf { it.isNotEmpty() })
         if (info == null) {
             toast(getString(R.string.capture_camera_error, "aucune caméra arrière"))
             finish()
             return
         }
-        cameraInfo = info
-        val p = CaptureGrid.build(info.hfovPortraitDeg, info.vfovPortraitDeg)
-        plan = p
-        captured = BooleanArray(p.size)
-        overlay.plan = p
-        overlay.captured = captured
-        overlay.rotation = tracker.rotation
-
-        val id = store.newId()
-        session = CaptureSessionMeta(
-            id, System.currentTimeMillis(),
-            store.nextName { getString(R.string.sphere_default_name, it) },
-            CameraMeta(info.hfovPortraitDeg, info.vfovPortraitDeg, info.jpegPortraitWidth, info.jpegPortraitHeight, info.sensorOrientation),
-            mutableListOf(), SessionState.CAPTURING, targetCount = p.size
-        )
-        store.sessionDir(id).mkdirs()
+        folderId = intent.getStringExtra(EXTRA_FOLDER) ?: ""
+        sessionId = store.newId()
+        sessionCreatedAt = System.currentTimeMillis()
+        sessionName = store.nextName { getString(R.string.sphere_default_name, it) }
+        store.sessionDir(sessionId).mkdirs()
+        applyLens(info)
 
         val topPad = topBar.paddingTop
         root.onSystemInsets { top, bottom ->
@@ -148,6 +156,7 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
 
         preview.surfaceTextureListener = this
         btnStart.setOnClickListener { startGuidance() }
+        btnLens.setOnClickListener { showLensPicker() }
         // Filet de sécurité : si le déclenchement automatique ne se fait pas (capteur lent,
         // utilisateur qui n'arrive pas à stabiliser), un appui sur l'image force la prise.
         overlay.setOnClickListener { captureManually() }
@@ -157,8 +166,107 @@ class CaptureActivity : Activity(), CameraController.Callbacks, TextureView.Surf
         updateProgress()
         setHint(R.string.capture_hint_aim)
         hint.visibility = View.INVISIBLE
+        updateLensUi()
 
         if (!hasCameraPermission()) requestPermissions(arrayOf(Manifest.permission.CAMERA), REQ_CAMERA)
+    }
+
+    // ---- Objectif ----
+
+    /**
+     * Applique un objectif : plan de capture, méta de session et prévisualisation.
+     *
+     * Le changement d'objectif n'est possible qu'avant la première photo : le champ de vue et la
+     * distorsion sont des propriétés de la session tout entière, et l'assemblage les relit pour
+     * projeter chaque photo. Le plan de capture est donc reconstruit à chaque changement.
+     */
+    private fun applyLens(info: CameraController.CameraInfo) {
+        cameraInfo = info
+        prefs.lensId = info.cameraId
+        val p = CaptureGrid.build(info.hfovPortraitDeg, info.vfovPortraitDeg)
+        plan = p
+        captured = BooleanArray(p.size)
+        capturedCount = 0
+        overlay.plan = p
+        overlay.captured = captured
+        overlay.rotation = tracker.rotation
+        overlay.distortion = portraitDistortion(info)
+        session = CaptureSessionMeta(
+            sessionId, sessionCreatedAt, sessionName,
+            CameraMeta(
+                info.hfovPortraitDeg, info.vfovPortraitDeg,
+                info.jpegPortraitWidth, info.jpegPortraitHeight, info.sensorOrientation,
+                portraitDistortion(info).takeIf { !it.identity }?.coefficients(),
+                lensName(info)
+            ),
+            mutableListOf(), SessionState.CAPTURING, targetCount = p.size, folderId = folderId
+        )
+        lastLayoutKey = ""
+        layoutPreview()
+        updateProgress()
+        updateLensUi()
+    }
+
+    /**
+     * Distorsion de l'objectif ramenée au repère de la photo enregistrée.
+     *
+     * Le pilote la décrit dans le repère du capteur, en paysage ; les photos sont enregistrées
+     * redressées en portrait, tournées de `sensorOrientation` degrés dans le sens horaire.
+     */
+    private fun portraitDistortion(info: CameraController.CameraInfo): LensDistortion =
+        LensDistortion.fromOpenCvOrder(info.distortion).rotatedClockwise(info.sensorOrientation)
+
+    private fun lensName(info: CameraController.CameraInfo): String = getString(when (info.kind) {
+        CameraController.LensKind.TELE -> R.string.lens_tele
+        CameraController.LensKind.STANDARD -> R.string.lens_standard
+        CameraController.LensKind.WIDE -> R.string.lens_wide
+        CameraController.LensKind.ULTRAWIDE -> R.string.lens_ultrawide
+    })
+
+    private fun lensLabel(info: CameraController.CameraInfo): String =
+        getString(R.string.lens_entry, lensName(info), info.hfovLandscapeDeg.roundToInt())
+
+    private fun updateLensUi() {
+        val info = cameraInfo ?: return
+        val p = plan ?: return
+        // Un seul objectif arrière : rien à choisir, on n'encombre pas l'écran.
+        btnLens.visibility = if (lenses.size > 1) View.VISIBLE else View.GONE
+        btnLens.text = getString(R.string.lens_button, lensLabel(info))
+        val widest = lenses.maxByOrNull { it.hfovLandscapeDeg }
+        val reference = lenses.minByOrNull { it.hfovLandscapeDeg }
+        lensNote.text = when {
+            lenses.size <= 1 -> getString(R.string.lens_note_single, p.size)
+            info.kind == CameraController.LensKind.WIDE || info.kind == CameraController.LensKind.ULTRAWIDE -> {
+                val baseline = reference?.let { CaptureGrid.build(it.hfovPortraitDeg, it.vfovPortraitDeg).size } ?: p.size
+                val res = if (portraitDistortion(info).identity && info.stillCorrection < 0)
+                    R.string.lens_note_wide_uncorrected else R.string.lens_note_wide
+                getString(res, p.size, baseline)
+            }
+            widest != null && widest.hfovLandscapeDeg > info.hfovLandscapeDeg + 8 ->
+                getString(R.string.lens_note_standard, p.size)
+            else -> getString(R.string.lens_note_single, p.size)
+        }
+    }
+
+    private fun showLensPicker() {
+        if (lenses.size < 2) return
+        val current = cameraInfo?.cameraId
+        val labels = lenses.map { l ->
+            getString(R.string.lens_entry_shots, lensName(l), l.hfovLandscapeDeg.roundToInt(),
+                CaptureGrid.build(l.hfovPortraitDeg, l.vfovPortraitDeg).size)
+        }.toTypedArray<CharSequence>()
+        AlertDialog.Builder(this)
+            .setTitle(R.string.lens_title)
+            .setSingleChoiceItems(labels, lenses.indexOfFirst { it.cameraId == current }) { dialog, which ->
+                dialog.dismiss()
+                val chosen = lenses[which]
+                if (chosen.cameraId != current) {
+                    applyLens(chosen)
+                    if (hasCameraPermission() && preview.isAvailable) openCamera()
+                }
+            }
+            .setNegativeButton(R.string.action_cancel, null)
+            .show()
     }
 
     @Suppress("DEPRECATION")

@@ -63,7 +63,8 @@ class FeatureAlignment(private val progress: (StitchJobs.Stage, Int) -> Unit) {
 
     class Alignment(val views: List<ShotView>, val totalShots: Int, val droppedForTexture: Int)
 
-    fun align(images: List<Mat>, shots: List<ShotMeta>, meta: CaptureSessionMeta): Alignment {
+    fun align(images: List<Mat>, shots: List<ShotMeta>, meta: CaptureSessionMeta,
+              lens: LensDistortion = LensDistortion.NONE): Alignment {
         if (images.size < 2) throw StitchException(StitchException.Kind.NEED_MORE, "moins de 2 photos")
         val imgW = images[0].cols()
         val imgH = images[0].rows()
@@ -82,6 +83,7 @@ class FeatureAlignment(private val progress: (StitchJobs.Stage, Int) -> Unit) {
             val finder = keep(SIFT.create(MAX_FEATURES, 3, 0.03, 10.0, 1.6, false))
             val allFeatures = keep(ImageFeaturesVector())
             opencv_stitching.computeImageFeatures(finder, work, allFeatures)
+            if (!lens.identity) undistortKeypoints(allFeatures, meta, workScale, imgW, imgH, lens)
             progress(StitchJobs.Stage.ALIGN, 18)
 
             val counts = (0 until allFeatures.size().toInt()).map { allFeatures.get(it.toLong()).keypoints().size().toInt() }
@@ -189,7 +191,8 @@ class FeatureAlignment(private val progress: (StitchJobs.Stage, Int) -> Unit) {
                 val index = originalIndex[k]
                 // Le centre optique n'est pas raffiné par l'ajustement de faisceau d'OpenCV, qui
                 // construit ses matrices avec le centre de l'image : on fait de même.
-                views.add(ShotView(shots[index], index, a, focal, imgW / 2.0, imgH / 2.0, focal * cam.aspect()))
+                views.add(ShotView(shots[index], index, a, focal, imgW / 2.0, imgH / 2.0,
+                    focal * cam.aspect(), lens))
             }
             val focals = views.map { it.focal }.sorted()
             Log.i(TAG, "recalage : ${views.size}/${images.size} photos, focale médiane %.0f px (min %.0f max %.0f)"
@@ -197,6 +200,38 @@ class FeatureAlignment(private val progress: (StitchJobs.Stage, Int) -> Unit) {
             return Alignment(views, images.size, images.size - usable.size)
         } finally {
             for (p in owned.asReversed()) try { p.close() } catch (_: Throwable) {}
+        }
+    }
+
+    /**
+     * Ramène les points d'intérêt dans le repère d'un objectif rectilinéaire parfait.
+     *
+     * Tout ce qui suit — appariement, homographies, ajustement de faisceau — suppose une caméra
+     * sténopé : une homographie ne peut pas représenter la relation entre deux photos distordues,
+     * et sur un grand angle l'ajustement ne converge pas ou converge vers une focale absurde. On
+     * corrige donc les coordonnées une fois pour toutes, juste après la détection. Les
+     * descripteurs, eux, décrivent un voisinage local et n'ont pas besoin d'être recalculés.
+     *
+     * Les vues produites gardent la distorsion : les rotations et la focale estimées décrivent
+     * bien la caméra idéale, mais c'est l'image distordue qui sera échantillonnée à la projection.
+     */
+    private fun undistortKeypoints(features: ImageFeaturesVector, meta: CaptureSessionMeta,
+                                   workScale: Double, imgW: Int, imgH: Int, lens: LensDistortion) {
+        val workW = (imgW * workScale).roundToInt()
+        val workH = (imgH * workScale).roundToInt()
+        val fx = PanoGeometry.focalPxX(meta.camera, workW)
+        val fy = PanoGeometry.focalPxY(meta.camera, workH)
+        val cx = workW / 2.0
+        val cy = workH / 2.0
+        val out = DoubleArray(2)
+        for (i in 0 until features.size()) {
+            val kps = features.get(i).keypoints()
+            for (j in 0 until kps.size()) {
+                val pt = kps.get(j).pt()
+                lens.undistort((pt.x() - cx) / fx, (pt.y() - cy) / fy, out)
+                pt.x((out[0] * fx + cx).toFloat())
+                pt.y((out[1] * fy + cy).toFloat())
+            }
         }
     }
 

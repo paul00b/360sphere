@@ -3,7 +3,9 @@ package care.primary.sphere360
 import care.primary.sphere360.capture.SphereMath
 import care.primary.sphere360.data.CameraMeta
 import care.primary.sphere360.data.ShotMeta
+import care.primary.sphere360.stitch.LensDistortion
 import care.primary.sphere360.stitch.PanoGeometry
+import care.primary.sphere360.stitch.ShotView
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -140,32 +142,82 @@ class PanoGeometryTest {
         assertEquals(0.0, PanoGeometry.angleBetweenRotationsDeg(q, PanoGeometry.averageRotation(candidates)), 0.02)
     }
 
+    private fun view(
+        yaw: Double, pitch: Double, roll: Double, cam: CameraMeta, w: Int, h: Int,
+        distortion: LensDistortion = LensDistortion.NONE
+    ): ShotView = ShotView(
+        ShotMeta("s.jpg", yaw, pitch, roll, 0),
+        0,
+        PanoGeometry.refToCamera(PanoGeometry.deviceRotationFrom(yaw, pitch, roll), 0.0),
+        PanoGeometry.focalPxX(cam, w), w / 2.0, h / 2.0, PanoGeometry.focalPxY(cam, h), distortion
+    )
+
     @Test
     fun footprintCoversTheAxisAndStaysLocal() {
         val cam = camera(50.0, 960, 1280)
-        val focal = PanoGeometry.focalPxX(cam, 960)
-        val focalY = PanoGeometry.focalPxY(cam, 1280)
         val w = 2048
         val h = 1024
-        val a = PanoGeometry.refToCamera(PanoGeometry.deviceRotationFrom(0.0, 0.0, 0.0), 0.0)
-        val fp = PanoGeometry.footprint(a, focal, focalY, 960, 1280, w, h)
+        val fp = PanoGeometry.footprint(view(0.0, 0.0, 0.0, cam, 960, 1280), 960, 1280, w, h)
         assertTrue("colonne centrale couverte", fp.cols[w / 2])
         // une photo de 50° de large ne doit pas couvrir tout le tour
         assertTrue("empreinte locale : ${fp.colCount}", fp.colCount in (w * 50 / 360)..(w * 90 / 360))
         assertTrue(fp.rowMin < h / 2 && fp.rowMax > h / 2)
 
         // une photo tournée de 180° couvre la couture sans exploser l'empreinte
-        val back = PanoGeometry.footprint(
-            PanoGeometry.refToCamera(PanoGeometry.deviceRotationFrom(180.0, 0.0, 0.0), 0.0), focal, focalY, 960, 1280, w, h)
+        val back = PanoGeometry.footprint(view(180.0, 0.0, 0.0, cam, 960, 1280), 960, 1280, w, h)
         assertTrue("couture couverte", back.cols[0] && back.cols[w - 1])
         assertTrue("empreinte locale malgré la couture : ${back.colCount}", back.colCount in (w * 50 / 360)..(w * 90 / 360))
         assertTrue("le centre n'est pas couvert", !back.cols[w / 2])
 
         // une photo visant le zénith couvre toutes les colonnes
-        val up = PanoGeometry.footprint(
-            PanoGeometry.refToCamera(PanoGeometry.deviceRotationFrom(0.0, 90.0, 0.0), 0.0), focal, focalY, 960, 1280, w, h)
+        val up = PanoGeometry.footprint(view(0.0, 90.0, 0.0, cam, 960, 1280), 960, 1280, w, h)
         assertEquals(w, up.colCount)
         assertEquals(0, up.rowMin)
+    }
+
+    @Test
+    fun barrelDistortionShrinksTheFootprint() {
+        // Un objectif en barillet ramène les bords vers le centre : à focale égale, l'empreinte
+        // d'une photo distordue couvre donc un champ plus large que celle d'une photo idéale.
+        val cam = camera(90.0, 960, 1280)
+        val w = 2048
+        val h = 1024
+        val ideal = PanoGeometry.footprint(view(0.0, 0.0, 0.0, cam, 960, 1280), 960, 1280, w, h)
+        val barrel = LensDistortion(-0.18, 0.03, 0.0, 0.0, 0.0).boundedTo(cam.hfovDeg, cam.vfovDeg)!!
+        val distorted = PanoGeometry.footprint(view(0.0, 0.0, 0.0, cam, 960, 1280, barrel), 960, 1280, w, h)
+        assertTrue("empreinte élargie : ${distorted.colCount} contre ${ideal.colCount}",
+            distorted.colCount > ideal.colCount)
+    }
+
+    @Test
+    fun centreWeightAtMatchesTheRemappedWeight() {
+        val cam = camera(66.0, 960, 1280)
+        val v = view(0.0, 0.0, 0.0, cam, 960, 1280)
+        val scratch = DoubleArray(2)
+        // l'axe optique est parfaitement centré
+        assertEquals(1.0f, PanoGeometry.centreWeightAt(v, 0.0, 1.0, 0.0, 960, 1280, scratch), 1e-3f)
+        // une direction derrière la caméra ne pèse rien
+        assertEquals(0.0f, PanoGeometry.centreWeightAt(v, 0.0, -1.0, 0.0, 960, 1280, scratch), 0.0f)
+        // le poids décroît en s'écartant de l'axe
+        val near = PanoGeometry.centreWeightAt(v, SphereMath.dirFromYawPitch(0.1, 0.0).x,
+            SphereMath.dirFromYawPitch(0.1, 0.0).y, SphereMath.dirFromYawPitch(0.1, 0.0).z, 960, 1280, scratch)
+        val far = PanoGeometry.centreWeightAt(v, SphereMath.dirFromYawPitch(0.25, 0.0).x,
+            SphereMath.dirFromYawPitch(0.25, 0.0).y, SphereMath.dirFromYawPitch(0.25, 0.0).z, 960, 1280, scratch)
+        assertTrue("$near > $far", near > far)
+        assertTrue(far >= 0f)
+    }
+
+    @Test
+    fun distortionOfRejectsAnUnusableModel() {
+        val cam = camera(100.0, 960, 1280)
+        // modèle plausible : conservé
+        val plausible = CameraMeta(cam.hfovDeg, cam.vfovDeg, 960, 1280, 90, doubleArrayOf(-0.15, 0.02, 0.0, 0.0, 0.0))
+        assertTrue(!PanoGeometry.distortionOf(plausible).identity)
+        // modèle non monotone sur le cadre : écarté au profit d'une projection rectilinéaire
+        val absurd = CameraMeta(cam.hfovDeg, cam.vfovDeg, 960, 1280, 90, doubleArrayOf(-2.5, 0.0, 0.0, 0.0, 0.0))
+        assertTrue(PanoGeometry.distortionOf(absurd).identity)
+        // pas de coefficients : rien à appliquer
+        assertTrue(PanoGeometry.distortionOf(CameraMeta(cam.hfovDeg, cam.vfovDeg, 960, 1280, 90, null)).identity)
     }
 
     @Test

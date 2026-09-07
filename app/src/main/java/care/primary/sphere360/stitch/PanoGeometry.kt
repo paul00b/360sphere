@@ -127,15 +127,10 @@ object PanoGeometry {
         val colSpan: Int
     )
 
-    fun footprint(a: DoubleArray, focal: Double, focalY: Double, imgW: Int, imgH: Int, canvasW: Int, canvasH: Int, marginPx: Double = 1.5): Footprint {
-        val cx = imgW / 2.0
-        val cy = imgH / 2.0
+    fun footprint(view: ShotView, imgW: Int, imgH: Int, canvasW: Int, canvasH: Int, marginPx: Double = 1.5): Footprint {
         val samples = 48
-        var yawCenter = 0.0
-        run {
-            val d = applyTranspose(a, 0.0, 0.0, 1.0)
-            yawCenter = atan2(d[0], d[1])
-        }
+        val axis = applyTranspose(view.matrix, 0.0, 0.0, 1.0)
+        val yawCenter = atan2(axis[0], axis[1])
         var minRel = Double.MAX_VALUE
         var maxRel = -Double.MAX_VALUE
         var pitchMin = Double.MAX_VALUE
@@ -150,7 +145,10 @@ object PanoGeometry {
                 doubleArrayOf(imgW + marginPx, -marginPx + t * (imgH + 2 * marginPx))
             )
             for (p in border) {
-                val d = applyTranspose(a, (p[0] - cx) / focal, (p[1] - cy) / focalY, 1.0)
+                // Le bord du cadre est parcouru en pixels puis ramené en direction : c'est
+                // l'inverse du modele d'objectif, distorsion comprise, sans quoi l'empreinte d'un
+                // grand angle serait sous-estimee de plusieurs degres sur ses quatre cotes.
+                val d = view.rayOf(p[0], p[1])
                 val len = kotlin.math.sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2])
                 val yaw = atan2(d[0], d[1])
                 val pitch = asin((d[2] / len).coerceIn(-1.0, 1.0))
@@ -162,7 +160,7 @@ object PanoGeometry {
             }
         }
         // un pôle dans le champ élargit l'empreinte à toutes les colonnes
-        val poleInside = polesInside(a, focal, focalY, imgW, imgH, marginPx)
+        val poleInside = polesInside(view, imgW, imgH, marginPx)
         val cols = BooleanArray(canvasW)
         var count = 0
         var colStart = 0
@@ -188,13 +186,12 @@ object PanoGeometry {
     }
 
     /** Le zénith ou le nadir tombe-t-il dans le champ de la photo ? */
-    private fun polesInside(a: DoubleArray, focal: Double, focalY: Double, imgW: Int, imgH: Int, marginPx: Double): Boolean {
+    private fun polesInside(view: ShotView, imgW: Int, imgH: Int, marginPx: Double): Boolean {
+        val out = DoubleArray(2)
         for (z in listOf(1.0, -1.0)) {
-            val c = applyMatrix(a, 0.0, 0.0, z)
-            if (c[2] <= 1e-9) continue
-            val x = focal * c[0] / c[2] + imgW / 2.0
-            val y = focalY * c[1] / c[2] + imgH / 2.0
-            if (x >= -marginPx && x <= imgW + marginPx && y >= -marginPx && y <= imgH + marginPx) return true
+            if (!view.projectTo(0.0, 0.0, z, out)) continue
+            if (out[0] >= -marginPx && out[0] <= imgW + marginPx &&
+                out[1] >= -marginPx && out[1] <= imgH + marginPx) return true
         }
         return false
     }
@@ -220,7 +217,29 @@ object PanoGeometry {
         return w
     }
 
-    private fun smooth(t: Double): Double = t * t * (3 - 2 * t)
+    /**
+     * Poids de centrage d'une direction dans une photo : 1 sur l'axe optique, 0 sur le bord du
+     * cadre, nul en dehors. Meme definition que [centreWeight], evaluee direction par direction.
+     */
+    fun centreWeightAt(view: ShotView, dx: Double, dy: Double, dz: Double, imgW: Int, imgH: Int, scratch: DoubleArray): Float {
+        if (!view.projectTo(dx, dy, dz, scratch)) return 0f
+        val nx = kotlin.math.abs(scratch[0] / imgW * 2 - 1)
+        val ny = kotlin.math.abs(scratch[1] / imgH * 2 - 1)
+        val d = max(nx, ny)
+        return if (d >= 1.0) 0f else (1.0 - d).toFloat()
+    }
+
+    /**
+     * Modele de distorsion exploitable pour une session, ou aucun.
+     *
+     * Les coefficients viennent du pilote de la camera : on les borne au coin du cadre et on
+     * verifie qu'ils decrivent bien une fonction inversible avant de s'en servir. Un modele
+     * douteux ferait plus de degats qu'une projection rectilineaire approchee.
+     */
+    fun distortionOf(camera: CameraMeta): LensDistortion =
+        LensDistortion.fromOpenCvOrder(camera.distortion).boundedTo(camera.hfovDeg, camera.vfovDeg)
+            ?: LensDistortion.NONE
+
 
     /**
      * Part de la sphère que couvrirait un jeu de vues, en angle solide, estimée sur une grille
@@ -232,6 +251,7 @@ object PanoGeometry {
         val gridH = gridW / 2
         var covered = 0.0
         var total = 0.0
+        val scratch = DoubleArray(2)
         val sinY = DoubleArray(gridW); val cosY = DoubleArray(gridW)
         for (c in 0 until gridW) { val y = yawOfCol(c, gridW); sinY[c] = sin(y); cosY[c] = cos(y) }
         for (row in 0 until gridH) {
@@ -245,13 +265,9 @@ object PanoGeometry {
                 val dy = cosY[col] * cp
                 var hit = false
                 for (v in views) {
-                    val a = v.matrix
-                    val zc = a[6] * dx + a[7] * dy + a[8] * sp
-                    if (zc <= 1e-9) continue
-                    val x = v.focal * (a[0] * dx + a[1] * dy + a[2] * sp) / zc + v.ppx
-                    if (x < 0 || x > imgW - 1) continue
-                    val y = v.focalY * (a[3] * dx + a[4] * dy + a[5] * sp) / zc + v.ppy
-                    if (y < 0 || y > imgH - 1) continue
+                    if (!v.projectTo(dx, dy, sp, scratch)) continue
+                    if (scratch[0] < 0 || scratch[0] > imgW - 1) continue
+                    if (scratch[1] < 0 || scratch[1] > imgH - 1) continue
                     hit = true
                     break
                 }

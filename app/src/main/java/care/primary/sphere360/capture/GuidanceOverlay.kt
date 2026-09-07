@@ -9,6 +9,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.util.AttributeSet
 import android.view.View
+import care.primary.sphere360.stitch.LensDistortion
 import care.primary.sphere360.util.dp
 import kotlin.math.atan2
 import kotlin.math.cos
@@ -38,9 +39,18 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
     var active = false
     var yaw0 = 0.0
     var bottomInset = 0
+
+    /**
+     * Distorsion de l'objectif, appliquée aux points cibles pour qu'ils tombent là où le sujet
+     * apparaît vraiment dans la prévisualisation. Sans elle, un ultra grand angle décale les
+     * points de plusieurs dizaines de pixels sur les bords de l'image.
+     */
+    var distortion: LensDistortion = LensDistortion.NONE
+
     val previewRect = RectF()
     private var fx = 1f
     private var fy = 1f
+    private val scratch = DoubleArray(2)
 
     private val white = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; color = Color.WHITE }
@@ -108,6 +118,9 @@ class GuidanceOverlay @JvmOverloads constructor(context: Context, attrs: Attribu
             val isNext = i == nextIndex
             if (p == null) { if (isNext) nextInFront = false; continue }
             if (kotlin.math.abs(p[0]) > 1.6 || kotlin.math.abs(p[1]) > 2.2) { if (isNext) nextInFront = true; continue }
+            if (!distortion.identity && distortion.distort(p[0], p[1], scratch)) {
+                p[0] = scratch[0]; p[1] = scratch[1]
+            }
             val px = cx + (p[0] * fx).toFloat()
             val py = cy + (p[1] * fy).toFloat()
             if (isNext) { nextInFront = true; nextX = px; nextY = py }

@@ -59,7 +59,7 @@ interface ImageSource {
  *
  * La composition sépare donc chaque photo en deux échelles, dans l'esprit d'un mélange multi-bandes :
  *
- *  - les **fonds** (structures plus larges que [BLUR_FRACTION] de la sphère) sont moyennés avec un
+ *  - les **fonds** (structures plus larges que [blurFraction] de la sphère) sont moyennés avec un
  *    poids doux sur tout le recouvrement. Les écarts d'exposition et le vignetage se diluent
  *    progressivement, sans marche à la jointure, et un dédoublement à cette échelle ne se voit pas ;
  *  - les **détails** viennent de la photo qui regarde le pixel le plus près de son centre, avec un
@@ -74,35 +74,45 @@ interface ImageSource {
  * dans un canevas réduit, lui aussi global. Seuls les détails demandent la pleine résolution ; ils
  * sont traités par bandes de colonnes pour tenir dans la mémoire d'un téléphone.
  */
-class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
+class EquirectComposer(
+    private val progress: (StitchJobs.Stage, Int) -> Unit,
+    /**
+     * Douceur des raccords. La valeur par défaut est celle mesurée comme le meilleur compromis sur
+     * le banc de test ; l'écran de retouche permet de l'ajuster quand une pièce s'y prête mal.
+     */
+    private val blend: BlendScale = BlendScale.BALANCED
+) {
 
     companion object {
         private const val BAND_WIDTH = 512
 
-        /**
-         * Échelle de séparation des deux bandes, en fraction de la largeur du canevas.
-         *
-         * Tout ce qui est plus fin vient d'une seule photo, tout ce qui est plus large est moyenné.
-         * Trop fin, le dédoublement reste visible sur les structures moyennes ; trop large, les
-         * écarts d'exposition entre photos ne sont plus dilués et laissent une marche à la
-         * jointure. Un quarante-huitième de la largeur, soit environ 85 pixels sur un canevas de
-         * 4096, s'est révélé le meilleur compromis sur le banc de test.
-         */
-        private const val BLUR_FRACTION = 1.0 / 48
-
         /** Facteur de réduction de la bande des fonds. */
         private const val LOW_SHRINK = 8
 
-        /**
-         * Largeur du fondu des détails entre les deux photos les mieux centrées, exprimée en écart
-         * de poids de sélection. Un basculement franc laisserait une marche visible là où la
-         * parallaxe décale les deux photos ; un fondu étroit la transforme en dégradé de quelques
-         * dizaines de pixels, sans ramener le dédoublement d'une moyenne large.
-         */
-        private const val DETAIL_CROSSFADE = 0.14f
-
         private const val MIN_WEIGHT = 1e-3f
     }
+
+    /**
+     * Échelle de séparation des deux bandes, en fraction de la largeur du canevas.
+     *
+     * Tout ce qui est plus fin vient d'une seule photo, tout ce qui est plus large est moyenné.
+     * Trop fin, le dédoublement reste visible sur les structures moyennes ; trop large, les écarts
+     * d'exposition entre photos ne sont plus dilués et laissent une marche à la jointure. Un
+     * quarante-huitième de la largeur, soit environ 85 pixels sur un canevas de 4096, s'est révélé
+     * le meilleur compromis sur le banc de test.
+     */
+    private val blurFraction: Double get() = blend.blurFraction
+
+    /**
+     * Largeur du fondu des détails entre les deux photos les mieux centrées, exprimée en écart de
+     * poids de sélection. Un basculement franc laisserait une marche visible là où la parallaxe
+     * décale les deux photos ; un fondu étroit la transforme en dégradé de quelques dizaines de
+     * pixels, sans ramener le dédoublement d'une moyenne large.
+     */
+    private val detailCrossfade: Float get() = blend.detailCrossfade
+
+    /** Tampon de projection réutilisé : la composition est séquentielle. */
+    private val scratch = DoubleArray(2)
 
     /** Bande basse fréquence d'une photo, en coordonnées canevas réduites et repérée sur l'empreinte. */
     private class LowMap(val values: FloatArray, val valid: FloatArray, val w: Int, val h: Int,
@@ -123,7 +133,7 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         }
         if (imgW == 0) throw StitchException(StitchException.Kind.NEED_MORE, "aucune photo lisible")
 
-        val prints = views.map { PanoGeometry.footprint(it.matrix, it.focal, it.focalY, imgW, imgH, canvasW, canvasH) }
+        val prints = views.map { PanoGeometry.footprint(it, imgW, imgH, canvasW, canvasH) }
 
         // Images de référence remappées avec chaque photo : le poids de sélection, qui décroît
         // strictement du centre vers le bord, et un masque de validité.
@@ -148,13 +158,13 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
                     continue
                 }
                 try {
-                    lowMaps.add(buildLowMap(img, onesMat, views[i], prints[i], trig, canvasW * BLUR_FRACTION))
+                    lowMaps.add(buildLowMap(img, onesMat, views[i], prints[i], trig, canvasW * blurFraction))
                 } finally {
                     source.release(views[i].imageIndex)
                 }
             }
             progress(StitchJobs.Stage.COMPOSE, progressFrom + (progressTo - progressFrom) / 6)
-            val lowCanvas = blendLowBand(views, prints, lowMaps, canvasW / LOW_SHRINK, canvasH / LOW_SHRINK, trig)
+            val lowCanvas = blendLowBand(views, prints, lowMaps, canvasW / LOW_SHRINK, canvasH / LOW_SHRINK, trig, imgW, imgH)
 
             // ---- 2. Détails, à pleine résolution, par bandes de colonnes ----
             val bgr = ByteArray(canvasW * canvasH * 3)
@@ -311,7 +321,8 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
      * cellule laissée vide se lirait comme une tache noire dans le résultat final.
      */
     private fun blendLowBand(views: List<ShotView>, prints: List<PanoGeometry.Footprint>,
-                             lowMaps: List<LowMap?>, lowW: Int, lowH: Int, trig: Trig): FloatArray {
+                             lowMaps: List<LowMap?>, lowW: Int, lowH: Int, trig: Trig,
+                             imgW: Int, imgH: Int): FloatArray {
         val canvasW = trig.width
         val out = FloatArray(lowW * lowH * 3)
         val weight = FloatArray(lowW * lowH)
@@ -327,7 +338,8 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
                 for (col in 0 until lowW) {
                     val canvasCol = min(canvasW - 1, col * LOW_SHRINK)
                     if (!fp.cols[canvasCol]) continue
-                    val sel = centreWeightOf(view, trig.sinYaw[canvasCol] * cp, trig.cosYaw[canvasCol] * cp, sp)
+                    val sel = PanoGeometry.centreWeightAt(view, trig.sinYaw[canvasCol] * cp,
+                        trig.cosYaw[canvasCol] * cp, sp, imgW, imgH, scratch)
                     val w = smooth(sel)
                     if (w <= MIN_WEIGHT) continue
                     val u = unwrappedOffset(canvasCol, fp.colStart, canvasW).toFloat() / LOW_SHRINK
@@ -351,22 +363,6 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         }
         fillHoles(out, covered, lowW, lowH)
         return out
-    }
-
-    /**
-     * Poids de centrage d'une direction dans une photo : 1 sur l'axe optique, 0 sur le bord du
-     * cadre, nul en dehors. Même définition que PanoGeometry.centreWeight, évaluée directement.
-     */
-    private fun centreWeightOf(view: ShotView, dx: Double, dy: Double, dz: Double): Float {
-        val a = view.matrix
-        val zc = a[6] * dx + a[7] * dy + a[8] * dz
-        if (zc <= 1e-9) return 0f
-        val x = view.focal * (a[0] * dx + a[1] * dy + a[2] * dz) / zc + view.ppx
-        val y = view.focalY * (a[3] * dx + a[4] * dy + a[5] * dz) / zc + view.ppy
-        val nx = kotlin.math.abs(x / view.ppx - 1.0)
-        val ny = kotlin.math.abs(y / view.ppy - 1.0)
-        val d = max(nx, ny)
-        return if (d >= 1.0) 0f else (1.0 - d).toFloat()
     }
 
     /**
@@ -502,7 +498,7 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
                 val base = bilinear(lowCanvas, lowW, lowH, fx, fy)
                 // Poids du fondu : moitié-moitié sur la frontière entre les deux photos les mieux
                 // centrées, source unique dès que l'écart de centrage dépasse la largeur de fondu.
-                val t = ((sel1[p] - sel2[p]) / DETAIL_CROSSFADE).coerceIn(0f, 1f)
+                val t = ((sel1[p] - sel2[p]) / detailCrossfade).coerceIn(0f, 1f)
                 val w1 = if (sel2[p] <= 0f) 1f else 0.5f + 0.5f * smooth(t)
                 val w2 = 1f - w1
                 val o = p * 3
@@ -515,13 +511,16 @@ class EquirectComposer(private val progress: (StitchJobs.Stage, Int) -> Unit) {
         }
     }
 
+    /**
+     * Remplit la table de remappage pour une direction. Une direction hors champ, derrière la
+     * caméra ou hors du domaine de l'objectif, reçoit une coordonnée négative : `cv::remap` la
+     * traite alors comme un bord et la laisse noire, et le masque de validité l'exclut.
+     */
     private fun project(view: ShotView, dx: Double, dy: Double, dz: Double,
                         mx: FloatArray, my: FloatArray, index: Int) {
-        val a = view.matrix
-        val zc = a[6] * dx + a[7] * dy + a[8] * dz
-        if (zc <= 1e-9) { mx[index] = -2f; my[index] = -2f; return }
-        mx[index] = (view.focal * (a[0] * dx + a[1] * dy + a[2] * dz) / zc + view.ppx).toFloat()
-        my[index] = (view.focalY * (a[3] * dx + a[4] * dy + a[5] * dz) / zc + view.ppy).toFloat()
+        if (!view.projectTo(dx, dy, dz, scratch)) { mx[index] = -2f; my[index] = -2f; return }
+        mx[index] = scratch[0].toFloat()
+        my[index] = scratch[1].toFloat()
     }
 
     /** Écart en colonnes entre une colonne du canevas et l'origine d'une empreinte, couture résolue. */

@@ -60,6 +60,18 @@
     <string name="capture_permission_denied">L\'accès à la caméra est nécessaire pour capturer une sphère.</string>
     <string name="capture_no_sensor">Ce téléphone n\'a pas de capteur d\'orientation compatible.</string>
     <string name="capture_started_stitch">Assemblage lancé en arrière-plan</string>
+    <string name="lens_title">Objectif</string>
+    <string name="lens_tele">Téléobjectif</string>
+    <string name="lens_standard">Objectif principal</string>
+    <string name="lens_wide">Grand angle</string>
+    <string name="lens_ultrawide">Ultra grand angle</string>
+    <string name="lens_entry">%1$s · %2$d°</string>
+    <string name="lens_entry_shots">%1$s · %2$d° · %3$d photos</string>
+    <string name="lens_button">Objectif : %1$s</string>
+    <string name="lens_note_wide">Champ large : %1$d photos au lieu de %2$d, et les pôles sont réellement photographiés. La distorsion de l\'objectif est prise en compte.</string>
+    <string name="lens_note_wide_uncorrected">Champ large : %1$d photos au lieu de %2$d. Ce téléphone ne publie pas le modèle de distorsion de cet objectif : les raccords peuvent être moins nets sur les bords.</string>
+    <string name="lens_note_standard">%1$d photos à prendre. Un objectif plus large réduirait ce nombre.</string>
+    <string name="lens_note_single">%1$d photos à prendre.</string>
 
     <!-- Assemblage -->
     <string name="stitch_notif_channel">Assemblage des sphères</string>
@@ -82,9 +94,6 @@
     <string name="method_sensors_short">capteurs</string>
     <string name="meta_coverage">%1$d %% de la sphère</string>
     <string name="failure_details">%1$d photos prises sur %2$d positions · %3$d tentative(s) d\'assemblage.</string>
-    <string name="action_refine">Affiner l\'assemblage</string>
-    <string name="refine_title">Affiner l\'assemblage ?</string>
-    <string name="refine_body">La sphère sera réassemblée en recalant les photos sur leurs points d\'intérêt, ce qui corrige les erreurs de focale et les petits déplacements. Compte une à deux minutes, et sur des murs unis ou en faible lumière le recalage peut ne pas aboutir : la sphère actuelle est alors conservée.</string>
     <string name="recapture">Recapturer</string>
 
     <!-- Viewer -->
@@ -110,6 +119,58 @@
     <string name="portal_create_return">Créer aussi le portail retour</string>
     <string name="set_entry_view">Définir la vue d\'entrée</string>
     <string name="entry_view_saved">Vue d\'entrée enregistrée</string>
+
+    <!-- Retouche : assiette et réassemblage -->
+    <string name="level_menu">Redresser la sphère</string>
+    <string name="level_title">Assiette de la sphère</string>
+    <string name="level_body">Corrige un horizon penché. La rotation est appliquée à l\'affichage, sans réassembler l\'image, et les portails suivent le décor.</string>
+    <string name="level_tilt">Inclinaison avant/arrière : %1$s°</string>
+    <string name="level_roll">Roulis gauche/droite : %1$s°</string>
+    <string name="level_reset">Remettre à plat</string>
+    <string name="level_saved">Assiette enregistrée</string>
+    <string name="action_retouch">Retoucher l\'assemblage</string>
+    <string name="retouch_title">Retoucher l\'assemblage</string>
+    <string name="retouch_intro">Les photos de la capture sont conservées : la sphère peut être réassemblée autrement, autant de fois que nécessaire. Le résultat remplace la sphère actuelle, en gardant son nom, ses portails et sa vue d\'entrée.</string>
+    <string name="retouch_align_title">Alignement</string>
+    <string name="retouch_align_sensors">Depuis les capteurs (rapide, aboutit toujours)</string>
+    <string name="retouch_align_features">Recaler sur les points d\'intérêt (1 à 2 min)</string>
+    <string name="retouch_align_note">Le recalage corrige les erreurs de focale et les petits déplacements, mais échoue sur murs unis ou en faible lumière : la sphère actuelle est alors conservée.</string>
+    <string name="retouch_width_title">Résolution</string>
+    <string name="retouch_width">%1$d × %2$d px</string>
+    <string name="retouch_width_note">Au-delà de 4096, l\'affichage demande plus de mémoire au téléphone et le gain dépend de la netteté des photos d\'origine.</string>
+    <string name="retouch_blend_title">Raccords</string>
+    <string name="retouch_blend_soft">Doux — dilue les écarts de lumière</string>
+    <string name="retouch_blend_balanced">Équilibré — réglage par défaut</string>
+    <string name="retouch_blend_crisp">Francs — contours plus nets</string>
+    <string name="retouch_shots_title">Photos utilisées</string>
+    <string name="retouch_shots_note">Touche une photo pour l\'écarter. Une prise floue ou faite en marchant abîme la zone qu\'elle couvre ; sans elle, ses voisines la remplacent.</string>
+    <string name="retouch_shots_count">%1$d photo(s) sur %2$d</string>
+    <string name="retouch_excluded">Écartée</string>
+    <string name="retouch_run">Réassembler</string>
+    <string name="retouch_need_two">Il faut garder au moins deux photos.</string>
+    <string name="retouch_no_session">Les photos de cette capture ne sont plus disponibles : la sphère ne peut pas être réassemblée.</string>
+    <string name="retouch_started">Réassemblage lancé en arrière-plan</string>
+
+    <!-- Dossiers (visites) -->
+    <string name="folder_new">Nouveau dossier</string>
+    <string name="folder_new_title">Nouveau dossier</string>
+    <string name="folder_hint">Nom du lieu (ex. Maison Dupont)</string>
+    <string name="folder_default_name">Visite %1$d</string>
+    <string name="folder_rename_title">Renommer le dossier</string>
+    <string name="folder_count">%1$d sphère(s)</string>
+    <string name="folder_empty">Dossier vide</string>
+    <string name="folder_delete_title">Supprimer « %1$s » ?</string>
+    <string name="folder_delete_body">Le dossier et les %1$d sphère(s) qu\'il contient seront supprimés définitivement.</string>
+    <string name="folder_delete_body_empty">Ce dossier est vide, il sera simplement supprimé.</string>
+    <string name="folder_move">Déplacer vers…</string>
+    <string name="folder_move_title">Déplacer « %1$s »</string>
+    <string name="folder_root">Aucun dossier</string>
+    <string name="folder_move_warning">Les portails ne relient que des sphères d\'un même dossier : %1$d portail(s) seront supprimés par ce déplacement.</string>
+    <string name="folder_moved">Sphère déplacée vers « %1$s »</string>
+    <string name="folder_moved_root">Sphère sortie de son dossier</string>
+    <string name="folder_empty_title">Dossier vide</string>
+    <string name="folder_empty_body">Capture les pièces de ce lieu, puis relie-les entre elles avec des portails depuis le viewer.</string>
+    <string name="gallery_root_hint">Un dossier par lieu : les portails d\'une visite ne relient que les sphères d\'un même dossier.</string>
 
     <!-- Démo -->
     <string name="demo_install">Charger la visite de démo (3 pièces)</string>

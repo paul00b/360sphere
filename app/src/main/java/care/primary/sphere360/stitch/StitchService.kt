@@ -28,20 +28,23 @@ class StitchService : Service() {
         private const val TAG = "StitchService"
         const val ACTION_STITCH = "care.primary.sphere360.STITCH"
         const val EXTRA_SESSION = "session"
-        const val EXTRA_MODE = "mode"
+        const val EXTRA_OPTIONS = "options"
         private const val NOTIF_PROGRESS = 100
         private const val NOTIF_DONE_BASE = 200
 
-        fun enqueue(context: Context, sessionId: String, mode: StitchMode) {
+        fun enqueue(context: Context, sessionId: String, options: StitchOptions = StitchOptions()) {
             val i = Intent(context, StitchService::class.java)
                 .setAction(ACTION_STITCH)
                 .putExtra(EXTRA_SESSION, sessionId)
-                .putExtra(EXTRA_MODE, mode.name)
+                .putExtra(EXTRA_OPTIONS, options.toJson().toString())
             context.startForegroundService(i)
         }
+
+        fun enqueue(context: Context, sessionId: String, mode: StitchMode) =
+            enqueue(context, sessionId, StitchOptions(mode = mode))
     }
 
-    private val queue = LinkedBlockingQueue<Pair<String, StitchMode>>()
+    private val queue = LinkedBlockingQueue<Pair<String, StitchOptions>>()
     private var worker: Thread? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var doneCounter = 0
@@ -52,10 +55,10 @@ class StitchService : Service() {
         startForegroundCompat(buildProgressNotification(getString(R.string.status_queued), 0, true, null))
         val id = intent?.getStringExtra(EXTRA_SESSION)
         if (id != null) {
-            val mode = try { StitchMode.valueOf(intent.getStringExtra(EXTRA_MODE) ?: "") } catch (e: Exception) { StitchMode.SENSORS }
+            val options = StitchOptions.fromJson(intent.getStringExtra(EXTRA_OPTIONS))
             StitchJobs.update(id, StitchJobs.Stage.QUEUED, 0)
             App.store.loadSession(id)?.let { it.state = SessionState.STITCHING; it.error = null; App.store.saveSession(it) }
-            queue.add(id to mode)
+            queue.add(id to options)
             ensureWorker()
         } else if (queue.isEmpty() && worker == null) {
             stopSelfSafely()
@@ -96,7 +99,7 @@ class StitchService : Service() {
         stopSelf()
     }
 
-    private fun process(sessionId: String, mode: StitchMode) {
+    private fun process(sessionId: String, options: StitchOptions) {
         val store = App.store
         val meta = store.loadSession(sessionId) ?: run { StitchJobs.remove(sessionId); return }
         // Réassemblage d'une sphère existante : on remplace la sphère au lieu d'en créer une autre.
@@ -109,14 +112,17 @@ class StitchService : Service() {
             val result = SphereStitcher { stage, pct ->
                 StitchJobs.update(sessionId, stage, pct)
                 updateProgress(name, stage, pct)
-            }.stitch(store.sessionDir(sessionId), meta, store.equirectFile(sphereId), store.thumbFile(sphereId), mode)
+            }.stitch(store.sessionDir(sessionId), meta, store.equirectFile(sphereId), store.thumbFile(sphereId), options)
 
+            // Un réassemblage ne doit rien perdre de ce que l'utilisateur a réglé à la main : nom,
+            // vue d'entrée, portails, correction d'assiette et dossier survivent tous.
             val sphere = Sphere(
                 sphereId, existing?.name ?: name, existing?.createdAt ?: System.currentTimeMillis(),
                 result.width, result.height, result.defaultYaw, existing?.defaultPitch ?: 0.0,
                 existing?.portals ?: mutableListOf(), false, result.totalShots, result.usedShots,
                 if (result.method == StitchMethod.FEATURES) "features" else "sensors", result.coverage,
-                sessionId
+                sessionId, existing?.folderId ?: meta.folderId,
+                existing?.correctionPitch ?: 0.0, existing?.correctionRoll ?: 0.0
             )
             if (existing != null) sphere.defaultYaw = existing.defaultYaw
             store.add(sphere)

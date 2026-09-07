@@ -131,6 +131,45 @@ await page.click('.portal-chip:has-text("Terrasse")');
 const pt = await waitEvent('onPortalTapped');
 check(pt.args[0] === 'p3', `tap libellé en édition → onPortalTapped(${pt.args[0]})`);
 
+// correction d'assiette : aperçu immédiat, puis recalage des portails sur leur point d'image
+await page.evaluate(() => window.app.setMode('view'));
+const beforeTexture = await page.evaluate(() => {
+  const h = window.app.state.viewer.dataHelper;
+  return h.sphericalCoordsToTextureCoords({ yaw: 1.2, pitch: 0.1 });
+});
+const reanchored = JSON.parse(await page.evaluate(() => window.app.reanchorPortals(0.12, -0.05)));
+await page.waitForTimeout(300);
+const applied = await page.evaluate(() => {
+  const c = window.app.state.viewer.renderer.sphereCorrection;
+  return { tilt: c.x, roll: c.z, pan: c.y };
+});
+check(Math.abs(Math.abs(applied.tilt) - 0.12) < 1e-3 && Math.abs(Math.abs(applied.roll) - 0.05) < 1e-3,
+  `previewCorrection applique la rotation au maillage (${JSON.stringify(applied)})`);
+const p1 = reanchored.find(r => r.portalId === 'p1');
+check(!!p1 && (Math.abs(p1.yaw - 1.2) > 0.01 || Math.abs(p1.pitch - 0.1) > 0.01),
+  `reanchorPortals déplace le portail avec l'image (${p1 ? p1.yaw.toFixed(3) + ', ' + p1.pitch.toFixed(3) : 'absent'})`);
+const afterTexture = await page.evaluate((pos) => {
+  const h = window.app.state.viewer.dataHelper;
+  return h.sphericalCoordsToTextureCoords({ yaw: pos.yaw, pitch: pos.pitch });
+}, p1);
+// C'est tout l'intérêt du recalage : le portail désigne toujours le même pixel de l'image.
+check(Math.abs(afterTexture.textureX - beforeTexture.textureX) < 3 &&
+  Math.abs(afterTexture.textureY - beforeTexture.textureY) < 3,
+  `le portail reste sur le même point d'image (${beforeTexture.textureX},${beforeTexture.textureY} -> ` +
+  `${afterTexture.textureX},${afterTexture.textureY})`);
+
+// commitCorrection : la correction est mémorisée dans le nœud, donc conservée à la navigation
+await page.evaluate(() => window.app.commitCorrection({
+  id: 'A', name: 'Salon', panorama: window.app.state.nodes.A.panorama,
+  defaultYaw: 0, defaultPitch: 0, correctionPitch: 0.12, correctionRoll: -0.05,
+  links: window.app.state.nodes.A.links
+}));
+await page.waitForTimeout(1200);
+const stored = await page.evaluate(() => window.app.state.tour.datasource.nodes.A.sphereCorrection);
+check(!!stored && Math.abs(stored.tilt - 0.12) < 1e-6 && Math.abs(stored.roll + 0.05) < 1e-6,
+  `commitCorrection enregistre l'assiette dans le nœud (${JSON.stringify(stored)})`);
+await page.screenshot({ path: path.join(shots, '6-assiette-corrigee.png') });
+
 await browser.close();
 server.close();
 console.log(failures.length ? `\n${failures.length} ÉCHEC(S)` : '\nTOUS LES TESTS PASSENT');
